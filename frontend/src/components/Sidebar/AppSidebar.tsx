@@ -13,8 +13,11 @@ import { type Item, Main } from "./Main"
 import { User } from "./User"
 
 const baseItems: Item[] = [
-  { icon: Home, title: "Dashboard", path: "/" },
-  { icon: Briefcase, title: "Items", path: "/items" },
+  { icon: Home, title: "首页", path: "/" },
+  { icon: Briefcase, title: "API配置", path: "/items" },
+  { icon: Briefcase, title: "热点视频", path: "/spotvideos" },
+  { icon: Briefcase, title: "文生图", path: "/text2image" },
+  { icon: Briefcase, title: "文生视频", path: "/text2video" }
 ]
 
 export function AppSidebar() {
