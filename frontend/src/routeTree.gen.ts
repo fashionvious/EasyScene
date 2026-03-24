@@ -21,6 +21,8 @@ import { Route as LayoutSpotvideosRouteImport } from './routes/_layout/spotvideo
 import { Route as LayoutSettingsRouteImport } from './routes/_layout/settings'
 import { Route as LayoutItemsRouteImport } from './routes/_layout/items'
 import { Route as LayoutAdminRouteImport } from './routes/_layout/admin'
+import { Route as LayoutText2videoIndexRouteImport } from './routes/_layout/text2video/index'
+import { Route as LayoutText2videoScriptIdRouteImport } from './routes/_layout/text2video/$scriptId'
 
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
@@ -81,6 +83,17 @@ const LayoutAdminRoute = LayoutAdminRouteImport.update({
   path: '/admin',
   getParentRoute: () => LayoutRoute,
 } as any)
+const LayoutText2videoIndexRoute = LayoutText2videoIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => LayoutText2videoRoute,
+} as any)
+const LayoutText2videoScriptIdRoute =
+  LayoutText2videoScriptIdRouteImport.update({
+    id: '/$scriptId',
+    path: '/$scriptId',
+    getParentRoute: () => LayoutText2videoRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof LayoutIndexRoute
@@ -93,7 +106,9 @@ export interface FileRoutesByFullPath {
   '/settings': typeof LayoutSettingsRoute
   '/spotvideos': typeof LayoutSpotvideosRoute
   '/text2image': typeof LayoutText2imageRoute
-  '/text2video': typeof LayoutText2videoRoute
+  '/text2video': typeof LayoutText2videoRouteWithChildren
+  '/text2video/$scriptId': typeof LayoutText2videoScriptIdRoute
+  '/text2video/': typeof LayoutText2videoIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -105,8 +120,9 @@ export interface FileRoutesByTo {
   '/settings': typeof LayoutSettingsRoute
   '/spotvideos': typeof LayoutSpotvideosRoute
   '/text2image': typeof LayoutText2imageRoute
-  '/text2video': typeof LayoutText2videoRoute
   '/': typeof LayoutIndexRoute
+  '/text2video/$scriptId': typeof LayoutText2videoScriptIdRoute
+  '/text2video': typeof LayoutText2videoIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -120,8 +136,10 @@ export interface FileRoutesById {
   '/_layout/settings': typeof LayoutSettingsRoute
   '/_layout/spotvideos': typeof LayoutSpotvideosRoute
   '/_layout/text2image': typeof LayoutText2imageRoute
-  '/_layout/text2video': typeof LayoutText2videoRoute
+  '/_layout/text2video': typeof LayoutText2videoRouteWithChildren
   '/_layout/': typeof LayoutIndexRoute
+  '/_layout/text2video/$scriptId': typeof LayoutText2videoScriptIdRoute
+  '/_layout/text2video/': typeof LayoutText2videoIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -137,6 +155,8 @@ export interface FileRouteTypes {
     | '/spotvideos'
     | '/text2image'
     | '/text2video'
+    | '/text2video/$scriptId'
+    | '/text2video/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -148,8 +168,9 @@ export interface FileRouteTypes {
     | '/settings'
     | '/spotvideos'
     | '/text2image'
-    | '/text2video'
     | '/'
+    | '/text2video/$scriptId'
+    | '/text2video'
   id:
     | '__root__'
     | '/_layout'
@@ -164,6 +185,8 @@ export interface FileRouteTypes {
     | '/_layout/text2image'
     | '/_layout/text2video'
     | '/_layout/'
+    | '/_layout/text2video/$scriptId'
+    | '/_layout/text2video/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -260,8 +283,35 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LayoutAdminRouteImport
       parentRoute: typeof LayoutRoute
     }
+    '/_layout/text2video/': {
+      id: '/_layout/text2video/'
+      path: '/'
+      fullPath: '/text2video/'
+      preLoaderRoute: typeof LayoutText2videoIndexRouteImport
+      parentRoute: typeof LayoutText2videoRoute
+    }
+    '/_layout/text2video/$scriptId': {
+      id: '/_layout/text2video/$scriptId'
+      path: '/$scriptId'
+      fullPath: '/text2video/$scriptId'
+      preLoaderRoute: typeof LayoutText2videoScriptIdRouteImport
+      parentRoute: typeof LayoutText2videoRoute
+    }
   }
 }
+
+interface LayoutText2videoRouteChildren {
+  LayoutText2videoScriptIdRoute: typeof LayoutText2videoScriptIdRoute
+  LayoutText2videoIndexRoute: typeof LayoutText2videoIndexRoute
+}
+
+const LayoutText2videoRouteChildren: LayoutText2videoRouteChildren = {
+  LayoutText2videoScriptIdRoute: LayoutText2videoScriptIdRoute,
+  LayoutText2videoIndexRoute: LayoutText2videoIndexRoute,
+}
+
+const LayoutText2videoRouteWithChildren =
+  LayoutText2videoRoute._addFileChildren(LayoutText2videoRouteChildren)
 
 interface LayoutRouteChildren {
   LayoutAdminRoute: typeof LayoutAdminRoute
@@ -269,7 +319,7 @@ interface LayoutRouteChildren {
   LayoutSettingsRoute: typeof LayoutSettingsRoute
   LayoutSpotvideosRoute: typeof LayoutSpotvideosRoute
   LayoutText2imageRoute: typeof LayoutText2imageRoute
-  LayoutText2videoRoute: typeof LayoutText2videoRoute
+  LayoutText2videoRoute: typeof LayoutText2videoRouteWithChildren
   LayoutIndexRoute: typeof LayoutIndexRoute
 }
 
@@ -279,7 +329,7 @@ const LayoutRouteChildren: LayoutRouteChildren = {
   LayoutSettingsRoute: LayoutSettingsRoute,
   LayoutSpotvideosRoute: LayoutSpotvideosRoute,
   LayoutText2imageRoute: LayoutText2imageRoute,
-  LayoutText2videoRoute: LayoutText2videoRoute,
+  LayoutText2videoRoute: LayoutText2videoRouteWithChildren,
   LayoutIndexRoute: LayoutIndexRoute,
 }
 

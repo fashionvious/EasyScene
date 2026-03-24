@@ -45,9 +45,9 @@ class HelloAgentsLLM:
             collected_content = []
             for chunk in response:
                 content = chunk.choices[0].delta.content or ""
-                print(content, end="", flush=True)
+                #print(content, end="", flush=True)
                 collected_content.append(content)
-            print()  # 在流式输出结束后换行
+            #print()  # 在流式输出结束后换行
             return "".join(collected_content)
 
         except Exception as e:
@@ -76,22 +76,3 @@ class HelloAgentsLLM:
         except Exception as e:
             print(f"❌ 调用LLM API时发生错误: {e}")
             raise
-
-# --- 客户端使用示例 ---
-if __name__ == '__main__':
-    try:
-        llmClient = HelloAgentsLLM()
-        
-        exampleMessages = [
-            {"role": "system", "content": "You are a helpful assistant that writes Python code."},
-            {"role": "user", "content": "写一个快速排序算法"}
-        ]
-        
-        print("--- 调用LLM ---")
-        responseText = llmClient.think(exampleMessages)
-        if responseText:
-            print("\n\n--- 完整模型响应 ---")
-            print(responseText)
-
-    except ValueError as e:
-        print(e)
