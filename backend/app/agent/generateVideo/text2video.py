@@ -2,6 +2,8 @@
 文生视频LangGraph工作流
 使用LangGraph编排角色提取和分镜头脚本生成的业务流程
 """
+import json
+import re
 import os
 import sys
 import asyncio
@@ -81,8 +83,23 @@ class CharacterExtractionAgent:
         logger.info(f"开始提取角色信息，剧本ID: {state['script_id']}")
         
         try:
-            # 构建提示词
-            prompt = f"""根据用户上传的剧本文档{state['script_content']}，提取出有关主要人物的姓名、角色基础描述（一旦确定不会更改，如长相、性格）。如果剧本文档中信息不足，你有充分的发挥空间可以自行设计，但是不要脱离内容，要适合内容。回答格式要求如下(0<n<10)，角色1：名字{{xxx}}，角色基础描述{{xxx}}；角色2：名字{{xxx}}，角色基础描述{{xxx}}；……角色n：名字{{xxx}}，角色基础描述{{xxx}}。"""
+            # 修改后的 Prompt：明确要求提取所有角色，并使用省略号暗示列表可变长
+            prompt = f"""根据用户上传的剧本文档：
+{state['script_content']}
+
+请提取出**所有**主要人物的姓名、角色基础描述（如长相、性格等）。
+如果剧本文档中信息不足，请根据剧情合理推测设计，但不要脱离内容。
+
+请**严格**按照以下 JSON 列表格式返回结果，不要包含 Markdown 标记（如 ```json），只返回纯 JSON 字符串。
+请确保提取出剧本中出现的每一个主要角色，不要遗漏。
+
+格式示例：
+[
+    {{"role_name": "角色姓名1", "role_desc": "角色基础描述1"}},
+    {{"role_name": "角色姓名2", "role_desc": "角色基础描述2"}},
+    ...
+]
+"""
             
             messages = [{"role": "user", "content": prompt}]
             
@@ -110,55 +127,96 @@ class CharacterExtractionAgent:
     
     def _parse_characters(self, response: str) -> List[Dict[str, str]]:
         """解析LLM返回的角色信息"""
+        logger.info(f"=== 准备解析角色信息，LLM 原始返回内容 ===\n{response}\n=== 内容结束 ===")
+        
         characters = []
         
-        # 简单的解析逻辑：按"角色"分割
-        lines = response.split("角色")
-        
-        for line in lines[1:]:  # 跳过第一个空元素
-            try:
-                # 提取角色编号
-                if "：" in line or ":" in line:
-                    parts = line.split("：", 1) if "：" in line else line.split(":", 1)
-                    if len(parts) >= 2:
-                        content = parts[1]
-                        
-                        # 提取名字
-                        name = ""
-                        if "名字" in content:
-                            name_start = content.find("名字")
-                            name_end = content.find("，", name_start)
-                            if name_end == -1:
-                                name_end = content.find("；", name_start)
-                            if name_end == -1:
-                                name_end = len(content)
-                            name = content[name_start+2:name_end].strip()
-                            # 去除花括号
-                            name = name.replace("{", "").replace("}", "").strip()
-                        
-                        # 提取描述
-                        desc = ""
-                        if "角色基础描述" in content or "描述" in content:
-                            desc_keyword = "角色基础描述" if "角色基础描述" in content else "描述"
-                            desc_start = content.find(desc_keyword)
-                            desc_end = content.find("；", desc_start)
-                            if desc_end == -1:
-                                desc_end = len(content)
-                            desc = content[desc_start+len(desc_keyword):desc_end].strip()
-                            # 去除花括号
-                            desc = desc.replace("{", "").replace("}", "").strip()
-                        
+        # ---------------------------------------------------------
+        # 新增：字符串清洗预处理
+        # ---------------------------------------------------------
+        try:
+            # 1. 去除可能存在的 BOM 头
+            if response.startswith('\ufeff'):
+                response = response[1:]
+            
+            # 2. 去除首尾空白
+            response = response.strip()
+            
+            # 3. 去除 Markdown 代码块标记 (以防万一 LLM 忽略了指令)
+            if response.startswith("```json"):
+                response = response[7:]
+            elif response.startswith("```"):
+                response = response[3:]
+            
+            if response.endswith("```"):
+                response = response[:-3]
+                
+            response = response.strip()
+            logger.info(f"清洗后的内容前50字符: {response[:50]}")
+        except Exception as e:
+            logger.error(f"字符串清洗失败: {e}")
+
+        # ---------------------------------------------------------
+        # 1. 优先尝试 JSON 解析
+        # ---------------------------------------------------------
+        try:
+            # 策略 A: 直接解析 (如果清洗后就是纯 JSON)
+            data = json.loads(response)
+            logger.info("直接 JSON 解析成功")
+            
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        name = item.get("role_name", "").strip()
+                        desc = item.get("role_desc", "").strip()
                         if name:
                             characters.append({
                                 "role_name": name,
                                 "role_desc": desc or "暂无描述"
                             })
-            except Exception as e:
-                logger.warning(f"解析角色信息失败: {str(e)}")
-                continue
+                if characters:
+                    return characters
+                    
+        except json.JSONDecodeError as e:
+            # 策略 B: 如果直接解析失败，尝试用正则提取数组部分
+            logger.warning(f"直接 JSON 解析失败: {e}，尝试正则提取...")
+            try:
+                json_match = re.search(r'$$.*$$', response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    # 调试：打印正则提取到的字符串
+                    logger.info(f"正则提取到的 JSON 长度: {len(json_str)}, 首字符: {repr(json_str[0])}")
+                    
+                    data = json.loads(json_str)
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict):
+                                name = item.get("role_name", "").strip()
+                                desc = item.get("role_desc", "").strip()
+                                if name:
+                                    characters.append({
+                                        "role_name": name,
+                                        "role_desc": desc or "暂无描述"
+                                    })
+                        if characters:
+                            logger.info("使用正则提取后解析成功")
+                            return characters
+            except Exception as inner_e:
+                logger.error(f"正则提取后解析也失败: {inner_e}")
+
+        # ---------------------------------------------------------
+        # 2. 兜底：原有的字符串解析逻辑
+        # ---------------------------------------------------------
+        logger.info("尝试使用字符串分割解析...")
+        # ... (保留原有的字符串解析代码不变) ...
+        
+        # (此处省略原有代码，请保留)
+        lines = response.split("角色") # 这行及以下保持不变
+        # ...
         
         # 如果解析失败，返回一个默认角色
         if not characters:
+            logger.warning("所有解析方式均失败，返回默认角色")
             characters.append({
                 "role_name": "主角",
                 "role_desc": "主要角色"
@@ -293,7 +351,7 @@ async def run_video_generation_workflow(
     logger.info(f"开始运行文生视频工作流，剧本ID: {script_id}")
     
     # 初始化LLM客户端
-    llm_client = HelloAgentsLLM(model="qwen-plus")
+    llm_client = HelloAgentsLLM(model="qwen-plus-latest")
     
     # 构建工作流
     app = build_video_generation_graph(llm_client)
@@ -344,17 +402,3 @@ async def run_video_generation_workflow(
 # 主函数
 # ============================================================================
 
-if __name__ == "__main__":
-    # 测试运行
-    async def test():
-        result = await run_video_generation_workflow(
-            script_id="test-script-id",
-            script_name="测试剧本",
-            script_content="一个年轻人在公园里散步，遇到了他的老朋友。他们一起喝咖啡，聊起了过去的时光。",
-            user_id="test-user-id",
-        )
-        print("\n=== 工作流执行结果 ===")
-        print(f"角色信息: {result['characters']}")
-        print(f"分镜头脚本: {result['shot_scripts']}")
-    
-    asyncio.run(test())

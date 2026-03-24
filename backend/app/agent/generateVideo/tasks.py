@@ -6,10 +6,12 @@ import os
 import asyncio
 import sys
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from celery import Celery
 from datetime import datetime
 from pathlib import Path
+from sqlmodel import Session
 
 # Windows事件循环策略
 if sys.platform == "win32":
@@ -28,6 +30,8 @@ from app.agent.utils.redis import (
     ProjectStatus,
     TaskStatus,
 )
+from app.core.db import engine
+from app.models import CharacterInfo, ShotScript, Script
 
 # 日志配置
 logger = logging.getLogger(__name__)
@@ -148,6 +152,13 @@ def generate_video_workflow_task(
                 result_summary=f"提取了{len(result.get('characters', []))}个角色",
             )
             
+            # 保存角色信息到数据库
+            characters = result.get('characters', [])
+            if characters:
+                save_success = save_characters_to_db(script_id, characters)
+                if not save_success:
+                    logger.warning(f"角色信息保存到数据库失败，但继续执行后续流程")
+            
             # 创建分镜头脚本生成任务
             shot_task_id = await redis_manager.create_task(
                 project_id=script_id,
@@ -166,6 +177,13 @@ def generate_video_workflow_task(
                 status=TaskStatus.SUCCESS,
                 result_summary=f"生成了{len(result.get('shot_scripts', []))}个分镜",
             )
+            
+            # 保存分镜头脚本到数据库
+            shot_scripts = result.get('shot_scripts', [])
+            if shot_scripts:
+                save_success = save_shot_scripts_to_db(script_id, shot_scripts)
+                if not save_success:
+                    logger.warning(f"分镜头脚本保存到数据库失败，但继续执行后续流程")
             
             # 设置项目为等待审核状态
             await redis_manager.set_project_waiting_review(
@@ -302,6 +320,118 @@ def confirm_shots_task(
             await redis_manager.close()
     
     return asyncio.run(run())
+
+
+# ============================================================================
+# 数据库操作辅助函数
+# ============================================================================
+
+def save_characters_to_db(script_id: str, characters: list) -> bool:
+    """
+    将角色信息保存到数据库
+    
+    参数:
+    - script_id: 剧本ID
+    - characters: 角色信息列表 [{"role_name": "xxx", "role_desc": "xxx"}, ...]
+    
+    返回:
+    - 是否保存成功
+    """
+    try:
+        with Session(engine) as session:
+            # 将script_id转换为UUID
+            script_uuid = uuid.UUID(script_id)
+            
+            # 先删除该剧本之前的角色信息（软删除）
+            from sqlmodel import select
+            statement = select(CharacterInfo).where(CharacterInfo.script_id == script_uuid)
+            existing_chars = session.exec(statement).all()
+            for char in existing_chars:
+                char.is_deleted = 1
+                char.update_time = datetime.utcnow()
+                session.add(char)
+            
+            # 创建新的角色信息
+            for char_data in characters:
+                character = CharacterInfo(
+                    script_id=script_uuid,
+                    role_name=char_data.get("role_name", "未命名角色"),
+                    role_desc=char_data.get("role_desc", "暂无描述"),
+                    version=1,
+                    create_time=datetime.utcnow(),
+                    update_time=datetime.utcnow(),
+                    is_deleted=0
+                )
+                session.add(character)
+            
+            # 更新剧本状态为"角色已生成"
+            script = session.get(Script, script_uuid)
+            if script:
+                script.status = 1  # 1=characters generated
+                script.update_time = datetime.utcnow()
+                session.add(script)
+            
+            session.commit()
+            logger.info(f"成功保存{len(characters)}个角色信息到数据库，剧本ID: {script_id}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"保存角色信息到数据库失败: {str(e)}")
+        return False
+
+
+def save_shot_scripts_to_db(script_id: str, shot_scripts: list) -> bool:
+    """
+    将分镜头脚本保存到数据库
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_scripts: 分镜头脚本列表 [{"shot_no": 1, "total_script": "xxx"}, ...]
+    
+    返回:
+    - 是否保存成功
+    """
+    try:
+        with Session(engine) as session:
+            # 将script_id转换为UUID
+            script_uuid = uuid.UUID(script_id)
+            
+            # 先删除该剧本之前的分镜头脚本（软删除）
+            from sqlmodel import select
+            statement = select(ShotScript).where(ShotScript.script_id == script_uuid)
+            existing_shots = session.exec(statement).all()
+            for shot in existing_shots:
+                shot.is_deleted = 1
+                shot.update_time = datetime.utcnow()
+                session.add(shot)
+            
+            # 创建新的分镜头脚本
+            for shot_data in shot_scripts:
+                shot_script = ShotScript(
+                    script_id=script_uuid,
+                    shot_no=shot_data.get("shot_no", 1),
+                    total_script=shot_data.get("total_script", ""),
+                    version=1,
+                    create_time=datetime.utcnow(),
+                    update_time=datetime.utcnow(),
+                    is_deleted=0
+                )
+                session.add(shot_script)
+            
+            # 更新剧本状态为"分镜头脚本已生成"
+            script = session.get(Script, script_uuid)
+            if script:
+                script.status = 2  # 2=storyboard generated
+                script.update_time = datetime.utcnow()
+                session.add(script)
+            
+            session.commit()
+            logger.info(f"成功保存{len(shot_scripts)}个分镜头脚本到数据库，剧本ID: {script_id}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"保存分镜头脚本到数据库失败: {str(e)}")
+        return False
 
 
 # ============================================================================
