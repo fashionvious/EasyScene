@@ -96,7 +96,57 @@ class UpdateShotsResponse(BaseModel):
     shot_scripts: List[ShotScriptResponse]
 
 
+class ScriptListItem(BaseModel):
+    """剧本列表项"""
+    id: str
+    script_name: str
+    status: int
+    create_time: datetime
+
+
+class ScriptListResponse(BaseModel):
+    """剧本列表响应"""
+    scripts: List[ScriptListItem]
+    total: int
+
+
 # --- API端点 ---
+
+@router.get("/text2video/scripts", response_model=ScriptListResponse)
+async def api_get_scripts(
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    获取当前用户的所有剧本列表
+    
+    返回:
+    - scripts: 剧本列表
+    - total: 总数
+    """
+    try:
+        # 查询当前用户的所有剧本（未删除的）
+        statement = select(Script).where(
+            Script.creator_id == current_user.id,
+            Script.is_deleted == 0
+        ).order_by(Script.create_time.desc())
+        scripts = session.exec(statement).all()
+        
+        return ScriptListResponse(
+            scripts=[
+                ScriptListItem(
+                    id=str(s.id),
+                    script_name=s.script_name,
+                    status=s.status,
+                    create_time=s.create_time,
+                )
+                for s in scripts
+            ],
+            total=len(scripts),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取剧本列表失败: {str(e)}")
+
 
 @router.post("/text2video/create-script", response_model=CreateScriptResponse)
 async def api_create_script(

@@ -160,19 +160,20 @@ function ScriptDetail() {
     }
     return false
   },
+  // 确保每次切换剧本时都重新获取数据
+  staleTime: 0,
+  refetchOnMount: true,
 })
   
   // 当数据加载完成时，初始化可编辑状态
+  // 修复：每次 scriptData 变化时都更新编辑状态
   useEffect(() => {
     if (scriptData) {
-      if (scriptData.characters.length > 0 && editableCharacters.length === 0) {
-        setEditableCharacters(scriptData.characters)
-      }
-      if (scriptData.shot_scripts.length > 0 && editableShots.length === 0) {
-        setEditableShots(scriptData.shot_scripts)
-      }
+      // 直接使用最新数据，不再判断 editableCharacters.length === 0
+      setEditableCharacters(scriptData.characters)
+      setEditableShots(scriptData.shot_scripts)
     }
-  }, [scriptData])
+  }, [scriptData?.script_id, scriptData?.characters, scriptData?.shot_scripts])
   
   // 更新角色信息
   const updateCharactersMutation = useMutation({
