@@ -83,7 +83,7 @@ function Dashboard() {
   }, [isPolling, qrCodeKey, checkLoginStatus])
 
   return (
-    <div>
+    <div className="p-6 md:p-8">
       <div>
         <h1 className="text-2xl truncate max-w-sm">
           Hi, {currentUser?.full_name || currentUser?.email} 👋
