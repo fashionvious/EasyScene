@@ -302,60 +302,91 @@ from dashscope import MultiModalConversation
 
 class CharacterThreeViewAgent:
     """角色四视图生成Agent节点"""
-    
-    def __init__(self, llm_client: HelloAgentsLLM):
+
+    def __init__(self, llm_client: HelloAgentsLLM, script_id: str = None):
         self.llm_client = llm_client
-        self.image_output_dir = Path(__file__).resolve().parents[3] / "generated_images"
-        self.image_output_dir.mkdir(parents=True, exist_ok=True)
+        # 保存 script_id，但会在 __call__ 中从 state 动态获取
+        self.script_id = script_id
         # 获取API Key
         self.api_key = os.getenv("DASHSCOPE_API_KEY")
         if not self.api_key:
             raise ValueError("请在.env文件中设置DASHSCOPE_API_KEY")
     
+    def _get_image_output_dir(self, script_id: str) -> Path:
+        """根据 script_id 获取图片输出目录"""
+        base_dir = Path(__file__).resolve().parents[3]
+        if script_id:
+            image_output_dir = base_dir / script_id / "generated_images"
+        else:
+            image_output_dir = base_dir / "generated_images"
+        image_output_dir.mkdir(parents=True, exist_ok=True)
+        return image_output_dir
+    
     def __call__(self, state: VideoGenerationState) -> VideoGenerationState:
         """执行角色四视图生成"""
         logger.info(f"开始生成角色四视图，剧本: {state['script_name']}")
-        
+
+        # 从 state 中获取 script_id，如果没有则使用初始化时的 script_id
+        script_id = state.get("script_id") or self.script_id
+        if not script_id:
+            logger.error("无法获取 script_id，使用默认路径")
+
+        # 获取图片输出目录
+        image_output_dir = self._get_image_output_dir(script_id)
+        logger.info(f"图片输出目录: {image_output_dir}")
+
         try:
             character_three_views = state.get("character_three_views", [])
-            
+
             # HITL模式：如果存在current_character，只处理当前角色
             current_character = state.get("current_character")
             if current_character:
                 # 只处理当前审核的角色
                 characters_to_process = [current_character]
                 logger.info(f"HITL模式：只处理当前角色 {current_character.get('role_name', '未知')}")
+
+                # 检查是否需要强制重新生成
+                force_regenerate = current_character.get("force_regenerate", False)
+                if force_regenerate:
+                    logger.info(f"强制重新生成模式：将重新生成角色 {current_character.get('role_name', '未知')} 的四视图")
             else:
                 # 非HITL模式：处理所有角色
                 characters_to_process = state["characters"]
                 logger.info(f"批量模式：处理所有角色，共{len(characters_to_process)}个")
-            
+                force_regenerate = False
+
             for character in characters_to_process:
                 role_name = character.get("role_name", "")
                 role_desc = character.get("role_desc", "")
-                
+
                 if not role_name:
                     continue
-                
+
                 # 检查是否已经生成过四视图
                 existing_view = next(
                     (v for v in character_three_views if v.get("role_name") == role_name),
                     None
                 )
-                if existing_view and existing_view.get("three_view_image_path"):
+
+                # 如果已存在且不是强制重新生成，则跳过
+                if existing_view and existing_view.get("three_view_image_path") and not force_regenerate:
                     logger.info(f"角色 {role_name} 的四视图已存在，跳过生成")
                     continue
-                
+
+                # 如果是强制重新生成，记录日志
+                if force_regenerate and existing_view:
+                    logger.info(f"强制重新生成角色 {role_name} 的四视图（旧图片将被覆盖）")
+
                 # Step 1: 生成四视图提示词
                 three_view_prompt = self._generate_three_view_prompt(role_name, role_desc)
-                
+
                 if not three_view_prompt:
                     logger.warning(f"角色 {role_name} 的四视图提示词生成失败")
                     continue
-                
+
                 # Step 2: 使用提示词生成四视图图片 (修改了调用方式)
-                image_path = self._generate_three_view_image(three_view_prompt, role_name)
-                
+                image_path = self._generate_three_view_image(three_view_prompt, role_name, image_output_dir)
+
                 # 更新或添加四视图信息
                 if existing_view:
                     existing_view["three_view_prompt"] = three_view_prompt
@@ -366,23 +397,23 @@ class CharacterThreeViewAgent:
                         "three_view_prompt": three_view_prompt,
                         "three_view_image_path": image_path or ""
                     })
-                
+
                 # 根据是否成功生成图片记录不同的日志
                 if image_path:
                     logger.info(f"角色 {role_name} 的四视图生成完成，图片路径: {image_path}")
                 else:
                     logger.warning(f"角色 {role_name} 的四视图图片生成失败，可能是 API 配额限制或其他错误")
-            
+
             state["character_three_views"] = character_three_views
             state["three_views_generated"] = True
             state["updated_at"] = datetime.utcnow().isoformat()
-            
+
             logger.info(f"角色四视图生成完成，共生成{len(character_three_views)}个角色的四视图")
-            
+
         except Exception as e:
             logger.error(f"角色四视图生成失败: {str(e)}")
             state["error_message"] = f"角色四视图生成失败: {str(e)}"
-        
+
         return state
     
     def _generate_three_view_prompt(self, role_name: str, role_desc: str) -> str:
@@ -416,7 +447,7 @@ Output Format
             logger.error(f"生成四视图提示词失败: {str(e)}")
             return ""
     
-    def _generate_three_view_image(self, prompt: str, role_name: str) -> str:
+    def _generate_three_view_image(self, prompt: str, role_name: str, image_output_dir: Path) -> str:
         """使用 qwen-image-2.0-pro 模型生成四视图图片并保存到本地"""
         try:
             # 设置 DashScope API 基础 URL（北京地域）
@@ -460,7 +491,7 @@ Output Format
                                     image_url = item['image']
                                     logger.info(f"成功获取图片 URL: {image_url}")
                                     # 下载并保存图片
-                                    return self._download_and_save_image(image_url, role_name)
+                                    return self._download_and_save_image(image_url, role_name, image_output_dir)
                     
                     logger.error(f"响应中未找到图片 URL: {response}")
                     return ""
@@ -487,15 +518,26 @@ Output Format
             logger.error(f"生成四视图图片失败: {str(e)}")
             return ""
 
-    def _download_and_save_image(self, image_url: str, role_name: str) -> str:
+    def _download_and_save_image(self, image_url: str, role_name: str, image_output_dir: Path) -> str:
         """下载图片并保存到本地"""
         try:
+            # 删除该角色的旧四视图图片（避免文件堆积）
+            # 查找所有以 "{role_name}_three_view_" 开头的文件
+            old_image_pattern = f"{role_name}_three_view_*.png"
+            for old_image in image_output_dir.glob(old_image_pattern):
+                try:
+                    old_image.unlink()
+                    logger.info(f"已删除旧的四视图图片: {old_image}")
+                except Exception as e:
+                    logger.warning(f"删除旧图片失败: {old_image}, 错误: {e}")
+            
+            # 下载新图片
             img_response = requests.get(image_url, timeout=30)
             img_response.raise_for_status()
             
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             image_filename = f"{role_name}_three_view_{timestamp}.png"
-            image_path = self.image_output_dir / image_filename
+            image_path = image_output_dir / image_filename
             
             with open(image_path, "wb") as f:
                 f.write(img_response.content)
@@ -759,28 +801,30 @@ def build_video_generation_graph(
     checkpointer=None,
     save_characters_callback=None,
     save_shots_callback=None,
-    redis_update_callback=None
+    redis_update_callback=None,
+    script_id: str = None
 ):
     """
     构建文生视频工作流图
-    
+
     参数:
     - llm_client: LLM客户端
     - checkpointer: AsyncPostgresSaver实例，用于存储图的执行状态（短期记忆）
     - save_characters_callback: 角色信息保存到数据库的回调函数
     - save_shots_callback: 分镜脚本保存到数据库的回调函数
     - redis_update_callback: Redis状态更新回调函数
-    
+    - script_id: 剧本ID，用于创建按剧本区分的图片保存目录
+
     工作流设计:
     1. character_agent和shot_agent并行执行（通过条件边实现）
     2. character_agent完成后进入HITL循环，逐个审核角色
     3. 每个角色审核后生成四视图
     4. 所有角色审核完毕后，汇合到END
     """
-    
+
     # 创建Agent节点
     character_agent = CharacterExtractionAgent(llm_client, save_characters_callback, redis_update_callback)
-    three_view_agent = CharacterThreeViewAgent(llm_client)
+    three_view_agent = CharacterThreeViewAgent(llm_client, script_id)
     shot_agent = ShotScriptGenerationAgent(llm_client, save_shots_callback, redis_update_callback)
     
     # 创建状态图
@@ -902,7 +946,8 @@ async def run_video_generation_workflow(
             checkpointer,
             save_characters_callback,
             save_shots_callback,
-            redis_update_callback
+            redis_update_callback,
+            script_id  # 传递 script_id 用于创建按剧本区分的目录
         )
         
         # 初始化状态
@@ -990,6 +1035,7 @@ async def resume_workflow_and_generate_three_view(
     character: dict,
     user_id: str,
     db_uri: Optional[str] = None,
+    force_regenerate: bool = False,
 ) -> Dict[str, Any]:
     """
     恢复工作流并生成角色四视图
@@ -999,6 +1045,7 @@ async def resume_workflow_and_generate_three_view(
     - character: 用户审核后的角色信息
     - user_id: 用户ID
     - db_uri: 数据库连接字符串
+    - force_regenerate: 是否强制重新生成四视图（即使已存在）
     
     返回:
     - 工作流恢复执行结果
@@ -1031,17 +1078,27 @@ async def resume_workflow_and_generate_three_view(
     
     try:
         # 构建工作流图
-        app = build_video_generation_graph(llm_client, checkpointer)
+        app = build_video_generation_graph(
+            llm_client,
+            checkpointer,
+            script_id=script_id  # 传递 script_id 用于创建按剧本区分的目录
+        )
         
         # 配置
         config = {"configurable": {"thread_id": script_id}}
+        
+        # 如果需要强制重新生成，在character中添加标记
+        if force_regenerate:
+            character_with_flag = {**character, "force_regenerate": True}
+        else:
+            character_with_flag = character
         
         # 使用 Command 恢复工作流
         # Command(resume=character) 会将 character 作为 interrupt() 的返回值
         from langgraph.types import Command
         
         result = await app.ainvoke(
-            Command(resume=character),
+            Command(resume=character_with_flag),
             config=config
         )
         

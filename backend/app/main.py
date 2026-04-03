@@ -35,12 +35,10 @@ if settings.all_cors_origins:
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 # 挂载静态文件目录，用于访问生成的图片
-# 获取 backend 目录
+# 修改：挂载 backend 目录本身，支持动态 script_id 路径
+# 例如：/static/images/{script_id}/generated_images/{filename}
 backend_dir = Path(__file__).resolve().parent.parent
-generated_images_dir = backend_dir / "generated_images"
 
-# 确保目录存在
-generated_images_dir.mkdir(parents=True, exist_ok=True)
-
-# 挂载静态文件到 /static/images 路径
-app.mount("/static/images", StaticFiles(directory=str(generated_images_dir)), name="static-images")
+# 挂载整个 backend 目录到 /static 路径
+# 这样可以访问 backend/{script_id}/generated_images/{filename}
+app.mount("/static", StaticFiles(directory=str(backend_dir), check_dir=False), name="static")

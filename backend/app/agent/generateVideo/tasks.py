@@ -331,16 +331,18 @@ def resume_character_review_task(
     character: dict,
     user_id: str,
     db_uri: Optional[str] = None,
+    force_regenerate: bool = False,
 ) -> Dict[str, Any]:
     """
-    恢复角色审核工作流（HITL）
-    
+    恢复角色审核工作流（HITL）或重新生成四视图
+
     参数:
     - script_id: 剧本ID
     - character: 用户审核后的角色信息
     - user_id: 用户ID
     - db_uri: 数据库连接字符串
-    
+    - force_regenerate: 是否强制重新生成四视图（即使已存在）
+
     返回:
     - 恢复执行结果
     """
@@ -352,10 +354,10 @@ def resume_character_review_task(
         postgres_user = os.getenv("POSTGRES_USER", "postgres")
         postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
         db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
-    
+
     async def run():
         redis_manager = get_video_project_manager()
-        
+
         try:
             # 检查项目是否存在，如果不存在则创建
             project_state = await redis_manager.get_project_state(script_id)
@@ -367,27 +369,28 @@ def resume_character_review_task(
                     project_id=script_id,
                     metadata={"current_character": character}
                 )
-            
+
             # 更新项目状态
             update_success = await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
-                metadata={"current_character": character},
+                metadata={"current_character": character, "force_regenerate": force_regenerate},
             )
-            
+
             if not update_success:
                 logger.warning(f"更新项目状态失败，但继续执行工作流恢复")
-            
-            logger.info(f"用户审核角色完成，准备恢复工作流，剧本ID: {script_id}")
-            
+
+            logger.info(f"用户审核角色完成，准备恢复工作流，剧本ID: {script_id}, 强制重新生成: {force_regenerate}")
+
             # 恢复LangGraph工作流并生成四视图
             result = await resume_workflow_and_generate_three_view(
                 script_id=script_id,
                 character=character,
                 user_id=user_id,
                 db_uri=db_uri,
+                force_regenerate=force_regenerate,
             )
-            
+
             # 检查是否有错误
             if result.get("error_message"):
                 await redis_manager.update_project_state(
@@ -396,7 +399,7 @@ def resume_character_review_task(
                     error_message=result["error_message"],
                 )
                 return result
-            
+
             # 更新角色四视图路径到数据库
             three_view_image_path = result.get("three_view_image_path")
             if three_view_image_path:
@@ -407,7 +410,7 @@ def resume_character_review_task(
                 )
                 if not update_success:
                     logger.warning(f"角色四视图路径更新到数据库失败")
-                
+
                 # 更新Redis状态，标记四视图生成完成
                 # 注意：这里不需要改变阶段，只需要确保状态是WAITING_REVIEW
                 await redis_manager.update_project_state(
@@ -415,9 +418,9 @@ def resume_character_review_task(
                     status=ProjectStatus.WAITING_REVIEW,
                 )
                 logger.info(f"已更新Redis状态：四视图生成完成")
-            
+
             logger.info(f"角色四视图生成完成，剧本ID: {script_id}")
-            
+
             return {
                 "success": True,
                 "script_id": script_id,
@@ -425,21 +428,21 @@ def resume_character_review_task(
                 "three_view_image_path": three_view_image_path,
                 "message": "角色审核完成，四视图已生成",
             }
-            
+
         except Exception as e:
             logger.error(f"恢复工作流失败: {str(e)}")
-            
+
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.FAILED,
                 error_message=str(e),
             )
-            
+
             raise e
-            
+
         finally:
             await redis_manager.close()
-    
+
     return asyncio.run(run())
 
 
@@ -713,20 +716,22 @@ async def resume_workflow_and_generate_three_view(
     character: dict,
     user_id: str,
     db_uri: str,
+    force_regenerate: bool = False,
 ) -> Dict[str, Any]:
     """
     恢复LangGraph工作流并生成角色四视图
-    
+
     使用 LangGraph 官方 HITL API：
     - 使用 Command(resume=...) 恢复中断的工作流
     - Command 的 resume 参数会作为 interrupt() 的返回值
-    
+
     参数:
     - script_id: 剧本ID
     - character: 用户审核后的角色信息
     - user_id: 用户ID
     - db_uri: 数据库连接字符串
-    
+    - force_regenerate: 是否强制重新生成四视图（即使已存在）
+
     返回:
     - 包含四视图路径的结果字典
     """
@@ -738,13 +743,13 @@ async def resume_workflow_and_generate_three_view(
         VideoGenerationState,
     )
     from app.agent.generatePic.llm_client import HelloAgentsLLM
-    
+
     pool = None
-    
+
     try:
         # 初始化LLM客户端
         llm_client = HelloAgentsLLM()
-        
+
         # 创建数据库连接池
         pool = AsyncConnectionPool(
             conninfo=db_uri,
@@ -753,26 +758,32 @@ async def resume_workflow_and_generate_three_view(
             kwargs={"autocommit": True, "prepare_threshold": 0}
         )
         await pool.open()
-        
+
         # 创建checkpointer
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
-        
+
         # 构建工作流图
         app = build_video_generation_graph(llm_client, checkpointer)
-        
+
         # 配置
         config = {"configurable": {"thread_id": script_id}}
-        
-        logger.info(f"准备恢复工作流，角色: {character.get('role_name', '未知')}")
-        
+
+        logger.info(f"准备恢复工作流，角色: {character.get('role_name', '未知')}, 强制重新生成: {force_regenerate}")
+
+        # 如果需要强制重新生成，在character中添加标记
+        if force_regenerate:
+            character_with_flag = {**character, "force_regenerate": True}
+        else:
+            character_with_flag = character
+
         # 使用 LangGraph 官方 HITL API 恢复工作流
         # Command(resume=character) 会将 character 作为 interrupt() 的返回值
         result = await app.ainvoke(
-            Command(resume=character),
+            Command(resume=character_with_flag),
             config=config
         )
-        
+
         # 提取四视图路径
         three_view_image_path = None
         if result and "character_three_views" in result:
@@ -782,20 +793,20 @@ async def resume_workflow_and_generate_three_view(
                 if view.get("role_name") == character.get("role_name"):
                     three_view_image_path = view.get("three_view_image_path")
                     break
-        
+
         logger.info(f"工作流恢复执行完成，四视图路径: {three_view_image_path}")
-        
+
         return {
             "success": True,
             "three_view_image_path": three_view_image_path,
         }
-        
+
     except Exception as e:
         logger.error(f"恢复工作流并生成四视图失败: {str(e)}")
         return {
             "error_message": str(e),
         }
-    
+
     finally:
         if pool:
             await pool.close()
@@ -845,3 +856,4 @@ def update_character_three_view_in_db(
     except Exception as e:
         logger.error(f"更新角色四视图路径到数据库失败: {str(e)}")
         return False
+    

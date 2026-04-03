@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery, useMutation } from "@tanstack/react-query"
 import {
@@ -69,19 +69,45 @@ interface UpdateShotsResponse {
   shot_scripts: ShotScript[]
 }
 
+interface ConfirmThreeViewResponse {
+  id: string
+  role_name: string
+  role_desc: string
+  three_view_image_path: string
+  message: string
+}
+
 // API 基础 URL
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 
 // 辅助函数：将本地文件路径转换为 HTTP URL
-function convertImagePathToUrl(imagePath: string | null | undefined): string | null {
+// 修改：支持按 script_id 区分的路径
+// 例如：D:\...\{script_id}\generated_images\叶玉华_three_view_20260401_095133.png
+// 转換為：http://127.0.0.1:8000/static/{script_id}/generated_images/叶玉华_three_view_20260401_095133.png
+function convertImagePathToUrl(imagePath: string | null | undefined, scriptId?: string): string | null {
   if (!imagePath) return null
 
-  // 从完整路径中提取文件名
-  // 例如：D:\...\generated_images\叶玉华_three_view_20260401_095133.png -> 叶玉华_three_view_20260401_095133.png
-  const fileName = imagePath.split(/[/\\]/).pop()
-
-  if (fileName) {
-    return `${API_BASE_URL}/static/images/${fileName}`
+  // 从完整路径中提取 script_id 和文件名
+  // 路径格式：D:\...\{script_id}\generated_images\{filename}
+  const pathParts = imagePath.split(/[/\\]/)
+  
+  // 查找 generated_images 目录的位置
+  const generatedImagesIndex = pathParts.findIndex(part => part === "generated_images")
+  
+  if (generatedImagesIndex > 0) {
+    // script_id 应该在 generated_images 的前一个位置
+    const extractedScriptId = pathParts[generatedImagesIndex - 1]
+    const fileName = pathParts[pathParts.length - 1]
+    
+    if (extractedScriptId && fileName) {
+      return `${API_BASE_URL}/static/${extractedScriptId}/generated_images/${fileName}`
+    }
+  }
+  
+  // 兜底：如果路径格式不匹配，尝试使用传入的 scriptId
+  const fileName = pathParts[pathParts.length - 1]
+  if (fileName && scriptId) {
+    return `${API_BASE_URL}/static/${scriptId}/generated_images/${fileName}`
   }
 
   return null
@@ -152,6 +178,28 @@ async function updateShots(
   return response.json()
 }
 
+// 4. 确认角色四视图API
+async function confirmCharacterThreeView(
+  characterId: string,
+): Promise<ConfirmThreeViewResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/confirm-character-three-view`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({ character_id: characterId }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `确认角色四视图失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 export const Route = createFileRoute("/_layout/text2video/$scriptId")({
   component: ScriptDetail,
   head: () => ({
@@ -166,12 +214,14 @@ export const Route = createFileRoute("/_layout/text2video/$scriptId")({
 // 图片预览模态框组件
 function ImagePreviewModal({
   imagePath,
+  scriptId,
   onClose
 }: {
   imagePath: string
+  scriptId: string
   onClose: () => void
 }) {
-  const imageUrl = convertImagePathToUrl(imagePath)
+  const imageUrl = convertImagePathToUrl(imagePath, scriptId)
 
   return (
     <div
@@ -204,14 +254,21 @@ function ImagePreviewModal({
 
 function ScriptDetail() {
   const { scriptId } = Route.useParams()
-  
+
   // 状态
   const [editableCharacters, setEditableCharacters] = useState<CharacterInfo[]>([])
   const [editableShots, setEditableShots] = useState<ShotScript[]>([])
+  const [originalCharacters, setOriginalCharacters] = useState<CharacterInfo[]>([]) // 原始角色数据
+  const [originalShots, setOriginalShots] = useState<ShotScript[]>([]) // 原始分镜数据
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [updatingCharacterId, setUpdatingCharacterId] = useState<string | null>(null)
+  const [confirmingCharacterId, setConfirmingCharacterId] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
+
+  // 使用 ref 跟踪是否应该接受远程更新
+  const shouldAcceptRemoteUpdateRef = useRef(true)
+  const lastSubmittedDataRef = useRef<{ characters: CharacterInfo[], shots: ShotScript[] } | null>(null)
   
  // 获取剧本状态
  const { data: scriptData, isLoading, refetch } = useQuery({
@@ -242,10 +299,19 @@ function ScriptDetail() {
 })
   
   // 当数据加载完成时，初始化可编辑状态
-  // 修复：每次 scriptData 变化时都更新编辑状态
+  // 修复：只有在非编辑状态下才更新本地数据
   useEffect(() => {
     if (scriptData) {
-      // 直接使用最新数据，不再判断 editableCharacters.length === 0
+      // 检查是否应该接受远程更新
+      if (!shouldAcceptRemoteUpdateRef.current) {
+        console.log('[DEBUG] 用户正在编辑，拒绝远程数据覆盖')
+        return
+      }
+
+      console.log('[DEBUG] 接受远程数据更新')
+      // 更新原始数据和编辑数据
+      setOriginalCharacters(scriptData.characters)
+      setOriginalShots(scriptData.shot_scripts)
       setEditableCharacters(scriptData.characters)
       setEditableShots(scriptData.shot_scripts)
     }
@@ -257,16 +323,21 @@ function ScriptDetail() {
       setError("角色ID不存在")
       return
     }
-    
+
     setUpdatingCharacterId(character.id)
     setError(null)
     setSuccessMessage(null)
-    
+
     try {
       await updateSingleCharacter(character.id, character.role_name, character.role_desc)
       setSuccessMessage("已提交，正在生成四视图...")
-       // 不需要手动刷新，轮询会自动获取最新数据
-       // 10秒后清除成功消息
+
+      // 提交成功后，更新原始数据，解除编辑锁定
+      setOriginalCharacters([...editableCharacters])
+      shouldAcceptRemoteUpdateRef.current = true // 解锁远程更新
+
+      // 不需要手动刷新，轮询会自动获取最新数据
+      // 10秒后清除成功消息
       setTimeout(() => setSuccessMessage(null), 10000)
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败")
@@ -274,11 +345,49 @@ function ScriptDetail() {
       setUpdatingCharacterId(null)
     }
   }
-  
+
+  // 确认角色四视图
+  const handleConfirmThreeView = async (character: CharacterInfo) => {
+    if (!character.id) {
+      setError("角色ID不存在")
+      return
+    }
+
+    if (!character.three_view_image_path) {
+      setError("角色还没有生成四视图")
+      return
+    }
+
+    setConfirmingCharacterId(character.id)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const result = await confirmCharacterThreeView(character.id)
+      setSuccessMessage(result.message || "四视图已确认")
+
+      // 确认成功后，更新原始数据，解除编辑锁定
+      setOriginalCharacters([...editableCharacters])
+      shouldAcceptRemoteUpdateRef.current = true // 解锁远程更新
+
+      // 刷新数据
+      refetch()
+      // 5秒后清除成功消息
+      setTimeout(() => setSuccessMessage(null), 5000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "确认失败")
+    } finally {
+      setConfirmingCharacterId(null)
+    }
+  }
+
   // 更新分镜头脚本
   const updateShotsMutation = useMutation({
     mutationFn: () => updateShots(scriptId, editableShots),
     onSuccess: () => {
+      // 提交成功后，更新原始数据，解除编辑锁定
+      setOriginalShots([...editableShots])
+      shouldAcceptRemoteUpdateRef.current = true // 解锁远程更新
       refetch()
     },
     onError: (err) => {
@@ -314,7 +423,8 @@ function ScriptDetail() {
       {/* 图片预览模态框 */}
       {previewImage && (
         <ImagePreviewModal 
-          imagePath={previewImage} 
+          imagePath={previewImage}
+          scriptId={scriptId}
           onClose={() => setPreviewImage(null)} 
         />
       )}
@@ -369,13 +479,14 @@ function ScriptDetail() {
                       <TableHead className="w-[100px]">角色</TableHead>
                       <TableHead className="w-[150px]">名字</TableHead>
                       <TableHead>角色描述</TableHead>
-                      <TableHead className="w-[100px]">操作</TableHead>
+                      <TableHead className="w-[160px]">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {editableCharacters.map((char, index) => {
-                      const isUpdating = updatingCharacterId === char.id 
-                      const hasThreeView = !!convertImagePathToUrl(char.three_view_image_path)
+                      const isUpdating = updatingCharacterId === char.id
+                      const isConfirming = confirmingCharacterId === char.id
+                      const hasThreeView = !!convertImagePathToUrl(char.three_view_image_path, scriptId)
                       return (
                         <TableRow key={char.id || index}>
                           <TableCell>
@@ -383,7 +494,7 @@ function ScriptDetail() {
                               {/* 四视图缩略图 */}
                                 {hasThreeView ? (
                                 <img
-                                  src={convertImagePathToUrl(char.three_view_image_path)!}
+                                  src={convertImagePathToUrl(char.three_view_image_path, scriptId)!}
                                   alt={`${char.role_name}四视图`}
                                   className="w-16 h-16 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity"
                                   onClick={() => setPreviewImage(char.three_view_image_path!)}
@@ -399,43 +510,67 @@ function ScriptDetail() {
                             <Input
                               value={char.role_name}
                               onChange={(e) => {
+                                // 用户开始输入，立即锁定远程更新
+                                shouldAcceptRemoteUpdateRef.current = false
                                 const newChars = [...editableCharacters]
                                 newChars[index].role_name = e.target.value
                                 setEditableCharacters(newChars)
                               }}
-                              disabled={isUpdating}
+                              disabled={isUpdating || isConfirming}
                             />
                           </TableCell>
                           <TableCell>
                             <Textarea
                               value={char.role_desc}
                               onChange={(e) => {
+                                // 用户开始输入，立即锁定远程更新
+                                shouldAcceptRemoteUpdateRef.current = false
                                 const newChars = [...editableCharacters]
                                 newChars[index].role_desc = e.target.value
                                 setEditableCharacters(newChars)
                               }}
-                              disabled={isUpdating}
+                              disabled={isUpdating || isConfirming}
                               className="min-h-[60px]"
                             />
                           </TableCell>
                           <TableCell>
-                            <Button
-                              size="sm"
-                              onClick={() => handleSaveCharacter(char)}
-                              disabled={isUpdating || !char.id}
-                            >
-                              {isUpdating ? (
-                                <>
-                                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                                  保存中
-                                </>
-                              ) : (
-                                <>
-                                  <Check className="h-4 w-4 mr-1" />
-                                  提交
-                                </>
-                              )}
-                            </Button>
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => handleSaveCharacter(char)}
+                                disabled={isUpdating || isConfirming || !char.id}
+                              >
+                                {isUpdating ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                    保存中
+                                  </>
+                                ) : (
+                                  <>
+                                    <Check className="h-4 w-4 mr-1" />
+                                    提交
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleConfirmThreeView(char)}
+                                disabled={isUpdating || isConfirming || !char.id || !hasThreeView}
+                              >
+                                {isConfirming ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                    确认中
+                                  </>
+                                ) : (
+                                  <>
+                                    <Check className="h-4 w-4 mr-1" />
+                                    确定
+                                  </>
+                                )}
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       )
@@ -494,6 +629,8 @@ function ScriptDetail() {
                           <Textarea
                             value={shot.total_script}
                             onChange={(e) => {
+                              // 用户开始输入，立即锁定远程更新
+                              shouldAcceptRemoteUpdateRef.current = false
                               const newShots = [...editableShots]
                               newShots[index].total_script = e.target.value
                               setEditableShots(newShots)

@@ -52,6 +52,11 @@ class UpdateShotsRequest(BaseModel):
     shot_scripts: List[dict]
 
 
+class ConfirmCharacterThreeViewRequest(BaseModel):
+    """确认角色四视图请求"""
+    character_id: str
+
+
 # --- 响应模型 ---
 
 class CreateScriptResponse(BaseModel):
@@ -74,6 +79,15 @@ class SingleCharacterResponse(BaseModel):
     id: str
     role_name: str
     role_desc: str
+    message: str
+
+
+class ConfirmThreeViewResponse(BaseModel):
+    """确认角色四视图响应"""
+    id: str
+    role_name: str
+    role_desc: str
+    three_view_image_path: str
     message: str
 
 
@@ -408,6 +422,9 @@ async def api_update_single_character(
         db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
         
         # 调用Celery任务恢复工作流
+        # 检查角色是否已有四视图，如果有则强制重新生成
+        has_existing_three_view = bool(character.three_view_image_path)
+
         task = resume_character_review_task.delay(
             script_id=str(script.id),
             character={
@@ -416,6 +433,7 @@ async def api_update_single_character(
             },
             user_id=str(current_user.id),
             db_uri=db_uri,
+            force_regenerate=has_existing_three_view,  # 如果已有四视图，则强制重新生成
         )
         
         # 更新Redis状态
@@ -438,6 +456,111 @@ async def api_update_single_character(
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=f"更新角色信息失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
+@router.post("/text2video/confirm-character-three-view", response_model=ConfirmThreeViewResponse)
+async def api_confirm_character_three_view(
+    request: ConfirmCharacterThreeViewRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    确认角色四视图并恢复HITL工作流
+    
+    参数:
+    - character_id: 角色ID
+    
+    返回:
+    - id: 角色ID
+    - role_name: 角色名称
+    - role_desc: 角色描述
+    - three_view_image_path: 四视图路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询角色信息
+        character_uuid = uuid.UUID(request.character_id)
+        character = session.get(CharacterInfo, character_uuid)
+        
+        if not character:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        
+        # 检查是否已删除
+        if character.is_deleted == 1:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        
+        # 检查是否有四视图
+        if not character.three_view_image_path:
+            raise HTTPException(status_code=400, detail="角色还没有生成四视图")
+        
+        # 通过角色关联查询剧本，进行权限校验
+        script = session.get(Script, character.script_id)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="关联的剧本不存在")
+        
+        # 权限校验：确保当前用户是该剧本的创建者
+        if script.creator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权确认此角色")
+        
+        # 不再修改图片文件名，因为每个角色的四视图最终只保存一张
+        # 直接使用当前的图片路径
+        
+        # 更新剧本的最后编辑时间和编辑者
+        script.last_editor_id = current_user.id
+        script.update_time = datetime.utcnow()
+        session.add(script)
+        
+        session.commit()
+        session.refresh(character)
+        
+        # 触发HITL恢复任务
+        from app.agent.generateVideo.tasks import resume_character_review_task
+        
+        # 构建数据库连接字符串
+        postgres_server = os.getenv("POSTGRES_SERVER", "localhost")
+        postgres_port = os.getenv("POSTGRES_PORT", "5432")
+        postgres_db = os.getenv("POSTGRES_DB", "app")
+        postgres_user = os.getenv("POSTGRES_USER", "postgres")
+        postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
+        db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
+        
+        # 调用Celery任务恢复工作流
+        task = resume_character_review_task.delay(
+            script_id=str(script.id),
+            character={
+                "role_name": character.role_name,
+                "role_desc": character.role_desc,
+            },
+            user_id=str(current_user.id),
+            db_uri=db_uri,
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=str(script.id),
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return ConfirmThreeViewResponse(
+            id=str(character.id),
+            role_name=character.role_name,
+            role_desc=character.role_desc,
+            three_view_image_path=character.three_view_image_path,
+            message="角色四视图已确认，继续处理下一个角色",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的角色ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"确认角色四视图失败: {str(e)}")
     finally:
         await redis_manager.close()
 
