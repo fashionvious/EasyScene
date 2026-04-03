@@ -8,6 +8,7 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 import os
+import logging
 
 from sqlmodel import Session, select
 
@@ -29,6 +30,7 @@ from app.agent.utils.redis import (
 from app.agent.generateVideo.tasks import start_video_generation, get_task_status
 
 router = APIRouter(tags=["text2video"])
+logger = logging.getLogger(__name__)
 
 
 # --- 请求模型 ---
@@ -39,9 +41,10 @@ class CreateScriptRequest(BaseModel):
     script_content: str = Field(..., min_length=10, max_length=500)
 
 
-class UpdateCharactersRequest(BaseModel):
-    """更新角色信息请求"""
-    characters: List[dict]
+class UpdateSingleCharacterRequest(BaseModel):
+    """更新单个角色信息请求"""
+    role_name: str = Field(..., min_length=1, max_length=255)
+    role_desc: str = Field(..., min_length=1)
 
 
 class UpdateShotsRequest(BaseModel):
@@ -63,6 +66,15 @@ class CharacterInfoResponse(BaseModel):
     id: str
     role_name: str
     role_desc: str
+    three_view_image_path: Optional[str] = None
+
+
+class SingleCharacterResponse(BaseModel):
+    """单个角色信息响应"""
+    id: str
+    role_name: str
+    role_desc: str
+    message: str
 
 
 class ShotScriptResponse(BaseModel):
@@ -82,12 +94,6 @@ class ScriptStatusResponse(BaseModel):
     shot_scripts: List[ShotScriptResponse]
     is_generating_characters: bool
     is_generating_shots: bool
-
-
-class UpdateCharactersResponse(BaseModel):
-    """更新角色信息响应"""
-    message: str
-    characters: List[CharacterInfoResponse]
 
 
 class UpdateShotsResponse(BaseModel):
@@ -267,20 +273,34 @@ async def api_get_script_status(
         
         # 从Redis获取生成状态
         project_state = await redis_manager.get_project_state(script_id)
-        
+
         is_generating_characters = False
         is_generating_shots = False
-        
+
         if project_state:
+            # 添加调试日志
+            logger.info(f"[API] 项目状态: stage={project_state.current_stage}, status={project_state.current_status}")
+            print(f"[DEBUG] 项目状态: stage={project_state.current_stage}, status={project_state.current_status}")
+
             # 检查是否正在生成角色信息
             if project_state.current_stage == ProjectStage.CHAR_DESC:
                 if project_state.current_status in [ProjectStatus.RUNNING, ProjectStatus.INITIALIZED]:
                     is_generating_characters = True
-            
+                    logger.info(f"[API] 正在生成角色信息")
+                    print(f"[DEBUG] 正在生成角色信息")
+
             # 检查是否正在生成分镜头脚本
             if project_state.current_stage == ProjectStage.SHOTLIST_SCRIPT:
                 if project_state.current_status == ProjectStatus.RUNNING:
                     is_generating_shots = True
+                    logger.info(f"[API] 正在生成分镜头脚本")
+                    print(f"[DEBUG] 正在生成分镜头脚本")
+        else:
+            logger.warning(f"[API] Redis 中没有项目状态，script_id={script_id}")
+            print(f"[DEBUG] Redis 中没有项目状态，script_id={script_id}")
+        
+        # 添加更多调试信息
+        logger.info(f"[API] 返回状态: is_generating_characters={is_generating_characters}, is_generating_shots={is_generating_shots}, characters_count={len(characters)}, shots_count={len(shot_scripts)}")
         
         return ScriptStatusResponse(
             script_id=str(script.id),
@@ -292,6 +312,7 @@ async def api_get_script_status(
                     id=str(c.id),
                     role_name=c.role_name,
                     role_desc=c.role_desc,
+                    three_view_image_path=c.three_view_image_path,
                 )
                 for c in characters
             ],
@@ -316,91 +337,102 @@ async def api_get_script_status(
         await redis_manager.close()
 
 
-@router.post("/text2video/update-characters/{script_id}", response_model=UpdateCharactersResponse)
-async def api_update_characters(
-    script_id: str,
-    request: UpdateCharactersRequest,
+@router.patch("/text2video/character/{character_id}", response_model=SingleCharacterResponse)
+async def api_update_single_character(
+    character_id: str,
+    request: UpdateSingleCharacterRequest,
     session: SessionDep,
     current_user: CurrentUser,
 ):
     """
-    更新角色信息
+    更新单个角色信息并恢复HITL工作流
     
     参数:
-    - script_id: 剧本ID
-    - characters: 角色信息列表
+    - character_id: 角色ID
+    - role_name: 角色名称
+    - role_desc: 角色描述
     
     返回:
+    - id: 角色ID
+    - role_name: 更新后的角色名称
+    - role_desc: 更新后的角色描述
     - message: 提示信息
-    - characters: 更新后的角色信息
     """
     redis_manager = get_video_project_manager()
     
     try:
-        # 查询剧本
-        script_uuid = uuid.UUID(script_id)
-        script = session.get(Script, script_uuid)
+        # 查询角色信息
+        character_uuid = uuid.UUID(character_id)
+        character = session.get(CharacterInfo, character_uuid)
+        
+        if not character:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        
+        # 检查是否已删除
+        if character.is_deleted == 1:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        
+        # 通过角色关联查询剧本，进行权限校验
+        script = session.get(Script, character.script_id)
         
         if not script:
-            raise HTTPException(status_code=404, detail="剧本不存在")
+            raise HTTPException(status_code=404, detail="关联的剧本不存在")
         
-        # 检查权限
-        if script.creator_id != current_user.id and script.share_perm < 2:
-            raise HTTPException(status_code=403, detail="无权修改此剧本")
+        # 权限校验：确保当前用户是该剧本的创建者
+        if script.creator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权修改此角色")
         
-        # 删除旧的角色信息
-        old_characters_statement = select(CharacterInfo).where(
-            CharacterInfo.script_id == script_uuid
-        )
-        old_characters = session.exec(old_characters_statement).all()
-        for old_char in old_characters:
-            old_char.is_deleted = 1
-            session.add(old_char)
+        # 更新角色信息
+        character.role_name = request.role_name
+        character.role_desc = request.role_desc
+        character.update_time = datetime.utcnow()
+        session.add(character)
         
-        # 创建新的角色信息
-        new_characters = []
-        for char_data in request.characters:
-            char = CharacterInfo(
-                script_id=script_uuid,
-                role_name=char_data.get("role_name", ""),
-                role_desc=char_data.get("role_desc", ""),
-                version=1,
-            )
-            session.add(char)
-            new_characters.append(char)
-        
-        # 更新剧本状态
-        if script.status == 0:
-            script.status = 1  # characters generated
+        # 更新剧本的最后编辑时间和编辑者
         script.last_editor_id = current_user.id
         script.update_time = datetime.utcnow()
         session.add(script)
         
         session.commit()
+        session.refresh(character)
         
-        # 刷新以获取ID
-        for char in new_characters:
-            session.refresh(char)
+        # 触发HITL恢复任务
+        from app.agent.generateVideo.tasks import resume_character_review_task
+        
+        # 构建数据库连接字符串
+        postgres_server = os.getenv("POSTGRES_SERVER", "localhost")
+        postgres_port = os.getenv("POSTGRES_PORT", "5432")
+        postgres_db = os.getenv("POSTGRES_DB", "app")
+        postgres_user = os.getenv("POSTGRES_USER", "postgres")
+        postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
+        db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
+        
+        # 调用Celery任务恢复工作流
+        task = resume_character_review_task.delay(
+            script_id=str(script.id),
+            character={
+                "role_name": request.role_name,
+                "role_desc": request.role_desc,
+            },
+            user_id=str(current_user.id),
+            db_uri=db_uri,
+        )
         
         # 更新Redis状态
-        await redis_manager.complete_project_review(
-            project_id=script_id,
-            approved=True,
+        await redis_manager.update_project_state(
+            project_id=str(script.id),
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
         )
         
-        return UpdateCharactersResponse(
-            message="角色信息更新成功",
-            characters=[
-                CharacterInfoResponse(
-                    id=str(c.id),
-                    role_name=c.role_name,
-                    role_desc=c.role_desc,
-                )
-                for c in new_characters
-            ],
+        return SingleCharacterResponse(
+            id=str(character.id),
+            role_name=character.role_name,
+            role_desc=character.role_desc,
+            message="角色信息更新成功，正在生成四视图",
         )
     except ValueError:
-        raise HTTPException(status_code=400, detail="无效的剧本ID")
+        raise HTTPException(status_code=400, detail="无效的角色ID")
     except HTTPException:
         raise
     except Exception as e:

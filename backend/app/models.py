@@ -168,6 +168,7 @@ class ScriptsPublic(SQLModel):
 class CharacterInfoBase(SQLModel):
     role_name: str = Field(max_length=255)
     role_desc: str
+    three_view_image_path: str | None = Field(default=None, max_length=500)  # 四视图图片路径
     version: int = Field(default=1)
 
 

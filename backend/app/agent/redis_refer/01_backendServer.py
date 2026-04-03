@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
         logger.info("数据库连接池初始化成功")
         # 短期记忆 初始化checkpointer
         app.state.checkpointer = AsyncPostgresSaver(app.state.pool)
-        # await app.state.checkpointer.setup()
+        await app.state.checkpointer.setup()
         logger.info("短期记忆存储Checkpointer初始化成功")
         # 长期记忆 初始化store
         app.state.store = AsyncPostgresStore(app.state.pool)

@@ -2,6 +2,8 @@ import sentry_sdk
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from app.api.main import api_router
 from app.core.config import settings
@@ -31,3 +33,14 @@ if settings.all_cors_origins:
     )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# 挂载静态文件目录，用于访问生成的图片
+# 获取 backend 目录
+backend_dir = Path(__file__).resolve().parent.parent
+generated_images_dir = backend_dir / "generated_images"
+
+# 确保目录存在
+generated_images_dir.mkdir(parents=True, exist_ok=True)
+
+# 挂载静态文件到 /static/images 路径
+app.mount("/static/images", StaticFiles(directory=str(generated_images_dir)), name="static-images")

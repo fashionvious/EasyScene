@@ -1,4 +1,5 @@
 import os
+import signal
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List, Dict, Generator
@@ -8,6 +9,15 @@ from pathlib import Path
 #load_dotenv()
 env_path = Path(__file__).resolve().parents[3] / ".env"  # 根据实际层级调整
 load_dotenv(env_path)
+
+
+# 超时处理类
+class TimeoutError(Exception):
+    pass
+
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("操作超时")
 class HelloAgentsLLM:
     """
     为本书 "Hello Agents" 定制的LLM客户端。
@@ -20,12 +30,13 @@ class HelloAgentsLLM:
         self.model = model or os.getenv("LLM_MODEL_ID")
         apiKey = apiKey or os.getenv("LLM_API_KEY")
         baseUrl = baseUrl or os.getenv("LLM_BASE_URL")
-        timeout = timeout or int(os.getenv("LLM_TIMEOUT", 60))
+        timeout = timeout or int(os.getenv("LLM_TIMEOUT", 120))  # 默认超时时间改为120秒
         
         if not all([self.model, apiKey, baseUrl]):
             raise ValueError("模型ID、API密钥和服务地址必须被提供或在.env文件中定义。")
 
         self.client = OpenAI(api_key=apiKey, base_url=baseUrl, timeout=timeout)
+        print(f"🔧 LLM客户端初始化完成: model={self.model}, timeout={timeout}s")
 
     def think(self, messages: List[Dict[str, str]], temperature: float = 0) -> str:
         """
@@ -33,25 +44,23 @@ class HelloAgentsLLM:
         """
         print(f"🧠 正在调用 {self.model} 模型...")
         try:
+            # 使用非流式响应以避免潜在的流式响应问题
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
-                stream=True,
+                stream=False,  # 改为非流式
             )
             
-            # 处理流式响应
-            print("✅ 大语言模型响应成功:")
-            collected_content = []
-            for chunk in response:
-                content = chunk.choices[0].delta.content or ""
-                #print(content, end="", flush=True)
-                collected_content.append(content)
-            #print()  # 在流式输出结束后换行
-            return "".join(collected_content)
+            print("✅ 大语言模型响应成功")
+            content = response.choices[0].message.content or ""
+            print(f"✅ 响应内容长度: {len(content)} 字符")
+            return content
 
         except Exception as e:
             print(f"❌ 调用LLM API时发生错误: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def think_stream(self, messages: List[Dict[str, str]], temperature: float = 0) -> Generator[str, None, None]:
