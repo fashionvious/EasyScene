@@ -44,6 +44,9 @@ interface ShotScript {
   id: string
   shot_no: number
   total_script: string
+  scene_group: number  // 场景组号
+  scene_name: string   // 场景名称
+  shot_group: number   // 分镜头组号
 }
 
 interface ScriptStatusResponse {
@@ -613,53 +616,90 @@ function ScriptDetail() {
                 </div>
               </div>
             ) : hasShots ? (
-              <div className="space-y-4">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[100px]">分镜</TableHead>
-                      <TableHead>分镜内容</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {editableShots.map((shot, index) => (
-                      <TableRow key={shot.id || index}>
-                        <TableCell>分镜{shot.shot_no}</TableCell>
-                        <TableCell>
-                          <Textarea
-                            value={shot.total_script}
-                            onChange={(e) => {
-                              // 用户开始输入，立即锁定远程更新
-                              shouldAcceptRemoteUpdateRef.current = false
-                              const newShots = [...editableShots]
-                              newShots[index].total_script = e.target.value
-                              setEditableShots(newShots)
-                            }}
-                            disabled={updateShotsMutation.isPending}
-                            className="min-h-[80px]"
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                <Button
-                  onClick={() => updateShotsMutation.mutate()}
-                  disabled={updateShotsMutation.isPending}
-                  className="w-full"
-                >
-                  {updateShotsMutation.isPending ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      正在保存...
-                    </>
-                  ) : (
-                    <>
-                      <Check className="h-4 w-4 mr-2" />
-                      确定分镜头脚本
-                    </>
-                  )}
-                </Button>
+              <div className="space-y-6">
+                {/* 按场景分组显示 */}
+                {Array.from(new Set(editableShots.map(shot => shot.scene_group))).map(sceneGroupNo => {
+                  const sceneShots = editableShots.filter(shot => shot.scene_group === sceneGroupNo)
+                  const sceneName = sceneShots[0]?.scene_name || "默认场景"
+                  
+                  return (
+                    <div key={sceneGroupNo} className="space-y-4">
+                      {/* 场景组标题 */}
+                      <div className="flex items-center gap-2 bg-muted/50 px-4 py-2 rounded-lg">
+                        <Film className="h-4 w-4 text-purple-500" />
+                        <span className="font-semibold">场景组{sceneGroupNo}：{sceneName}</span>
+                      </div>
+                      
+                      {/* 按分镜头组显示 */}
+                      {Array.from(new Set(sceneShots.map(shot => shot.shot_group))).map(shotGroupNo => {
+                        const groupShots = sceneShots.filter(shot => shot.shot_group === shotGroupNo)
+                        
+                        return (
+                          <div key={`${sceneGroupNo}-${shotGroupNo}`} className="border rounded-lg p-4 space-y-3">
+                            {/* 分镜头组标题 */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-muted-foreground">
+                                分镜头组 {shotGroupNo}
+                              </span>
+                              {/* 添加提交和确定按钮 */}
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    // TODO: 提交该分镜头组的功能（演示）
+                                    console.log(`提交场景${sceneGroupNo}分镜头组${shotGroupNo}`)
+                                  }}
+                                  disabled={updateShotsMutation.isPending}
+                                >
+                                  <Check className="h-4 w-4 mr-1" />
+                                  提交
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    // TODO: 确定该分镜头组的功能（演示）
+                                    console.log(`确定场景${sceneGroupNo}分镜头组${shotGroupNo}`)
+                                  }}
+                                  disabled={updateShotsMutation.isPending}
+                                >
+                                  <Check className="h-4 w-4 mr-1" />
+                                  确定
+                                </Button>
+                              </div>
+                            </div>
+                            
+                            {/* 分镜内容 */}
+                            {groupShots.map((shot, index) => {
+                              const shotIndex = editableShots.findIndex(s => s.id === shot.id)
+                              return (
+                                <div key={shot.id || index} className="space-y-2">
+                                  <div className="flex items-start gap-3">
+                                    <span className="text-sm font-medium min-w-[60px] pt-2">
+                                      分镜{shot.shot_no}
+                                    </span>
+                                    <Textarea
+                                      value={shot.total_script}
+                                      onChange={(e) => {
+                                        // 用户开始输入，立即锁定远程更新
+                                        shouldAcceptRemoteUpdateRef.current = false
+                                        const newShots = [...editableShots]
+                                        newShots[shotIndex].total_script = e.target.value
+                                        setEditableShots(newShots)
+                                      }}
+                                      disabled={updateShotsMutation.isPending}
+                                      className="min-h-[80px] flex-1"
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">

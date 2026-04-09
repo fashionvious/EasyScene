@@ -566,48 +566,64 @@ class ShotScriptGenerationAgent:
             prompt = f"""你是一个专业的分镜头脚本编写助手。你的任务是将剧本转化为紧凑、高效的分镜头脚本。
 
 # 核心目标
-生成适合AI视频生成的分镜脚本，要求剧情紧凑，避免碎片化。
+生成适合AI视频生成的分镜脚本，要求剧情紧凑，避免碎片化，并按场景进行分组。
 
 # 重要规则
-1. **合并原则**：
-   - 请尽量合并连续的对话和动作。一个分镜应包含一个完整的“剧情节拍”（例如，一段完整的对话交互，或一个连贯的动作过程）。
+1. **场景分组原则**：
+   - 必须按照场景对分镜进行分组，每个场景为一组。
+   - 场景是指故事发生的地点或环境（如"公司门口"、"昏暗的小巷"、"温馨的卧室"等）。
+   - 当场景发生明显变化时，必须开始新的场景组。
+   - 输出格式中必须明确标注场景组号和场景名称。
+
+2. **合并原则**：
+   - 请尽量合并连续的对话和动作。一个分镜应包含一个完整的"剧情节拍"（例如，一段完整的对话交互，或一个连贯的动作过程）。
    - **严禁过度拆分**。不要将每一句对话或每一个细微动作都单独生成为一个分镜。
    - 只要场景、时间、人物状态没有发生显著变化，尽量将多句对话或动作合并在同一个分镜中，充分利用15秒的视频时长。
 
-2. **独立性原则（关键）**：
+3. **独立性原则（关键）**：
    - 每一个分镜脚本都会被**独立**发送给不同的画师进行绘图。画师看不到其他分镜的内容。
-   - **严禁引用**：严禁使用“同上”、“同前”、“装束不变”、“场景不变”、“同一地点”、“原地”等任何引用性词汇。
-   - **完整复述**：如果下一镜的装束或场景与上一镜相同，必须**完整复述**具体的装束描述和场景名称（例如：如果上一镜是“公司门口”，下一镜也必须写“公司门口”，不能写“同一地点”）。
+   - **严禁引用**：严禁使用"同上"、"同前"、"装束不变"、"场景不变"、"同一地点"、"原地"等任何引用性词汇。
+   - **完整复述**：如果下一镜的装束或场景与上一镜相同，必须**完整复述**具体的装束描述和场景名称（例如：如果上一镜是"公司门口"，下一镜也必须写"公司门口"，不能写"同一地点"）。
 
-3. **内容要求**：
+4. **内容要求**：
    - 包含对布景和人物妆造的描述（不含长相、性格等固定特征，着重描述当下的心理和生理状态）。
-   - 如果有对话内容，需包含人物说话的状态（如“愤怒地喊道”）。
+   - 如果有对话内容，需包含人物说话的状态（如"愤怒地喊道"）。
    - 描述事件尽量直观客观，避免华丽辞藻，包含提升画面质量的提示词。
 
-4. **时长限制**：
+5. **时长限制**：
    - 每个分镜生成的视频时长不可超过15秒。请根据此上限合理规划每个分镜包含的事件量。
 
-# 输出格式
-分镜n：时间（粗略描述），室内/室外，场景，角色妆造分镜头，画面描述xxx
+# 输出格式（新增场景分组）
+【场景组1】场景名称：xxx
+分镜1：时间（粗略描述），室内/室外，场景，角色妆造分镜头，画面描述xxx
+分镜2：时间（粗略描述），室内/室外，场景，角色妆造分镜头，画面描述xxx
+
+【场景组2】场景名称：xxx
+分镜3：时间（粗略描述），室内/室外，场景，角色妆造分镜头，画面描述xxx
+分镜4：时间（粗略描述），室内/室外，场景，角色妆造分镜头，画面描述xxx
 
 # 示例
 【错误示例（场景引用）】：
+【场景组1】场景名称：昏暗的小巷
 分镜1：...，场景：昏暗的小巷，角色妆造：黑色风衣，...
-分镜2：...，场景：同一地点，角色妆造：同上，...  <-- 错误！画师不知道“同一地点”是哪里，也不知道“同上”是什么。
+分镜2：...，场景：同一地点，角色妆造：同上，...  <-- 错误！画师不知道"同一地点"是哪里，也不知道"同上"是什么。
 
 【正确示例（完整复述）】：
+【场景组1】场景名称：昏暗的小巷
 分镜1：...，场景：昏暗的小巷，角色妆造：黑色风衣，...
 分镜2：...，场景：昏暗的小巷，角色妆造：黑色风衣，...  <-- 正确！完整复述了场景和装束。
 
 【错误示例（过度拆分）】：
+【场景组1】场景名称：街道
 分镜1：...，画面描述：沈千凝走在路上。
 分镜2：...，画面描述：沈千凝自言自语。  <-- 错误！这两个动作连贯且场景未变，应合并。
 
 【正确示例（紧凑合并）】：
-分镜1：...，画面描述：沈千凝无精打采地走在回家的路上，难过地自言自语：“才第一天...”。 <-- 正确！合并了动作和对话。
+【场景组1】场景名称：街道
+分镜1：...，画面描述：沈千凝无精打采地走在回家的路上，难过地自言自语："才第一天..."。 <-- 正确！合并了动作和对话。
 
 # 任务
-请根据以下剧本生成分镜脚本：
+请根据以下剧本生成分镜脚本，并按场景进行分组：
 {state['script_content']}
 """
             messages = [{"role": "user", "content": prompt}]
@@ -660,7 +676,122 @@ class ShotScriptGenerationAgent:
         return state
     
     def _parse_shot_scripts(self, response: str) -> List[Dict[str, Any]]:
-        """解析LLM返回的分镜头脚本"""
+        """
+        解析LLM返回的分镜头脚本
+        支持场景分组和分镜头分组功能
+        
+        返回格式：
+        [
+            {
+                "shot_no": 1,
+                "scene_group": 1,  # 场景组号
+                "scene_name": "场景名称",
+                "shot_group": 1,   # 分镜头组号（每个场景下每4个分镜为1组）
+                "total_script": "分镜内容"
+            },
+            ...
+        ]
+        """
+        shot_scripts = []
+        
+        # 按场景组分割
+        scene_groups = re.split(r'【场景组(\d+)】场景名称[：:](.*?)(?=\n|$)', response)
+        
+        # 如果没有找到场景组标记，使用旧的解析逻辑
+        if len(scene_groups) <= 1:
+            logger.info("未找到场景组标记，使用旧版解析逻辑")
+            return self._parse_shot_scripts_legacy(response)
+        
+        logger.info(f"找到场景组标记，开始解析场景分组")
+        
+        # 用于存储场景名称到场景组号的映射（实现相同场景名合并）
+        scene_name_to_group = {}
+        current_scene_group_no = 0
+        
+        # 解析场景组
+        # scene_groups格式：[前置文本, 组号1, 场景名1, 内容1, 组号2, 场景名2, 内容2, ...]
+        i = 1
+        global_shot_no = 1
+        while i < len(scene_groups) - 2:
+            try:
+                original_scene_group_no = int(scene_groups[i])
+                scene_name_raw = scene_groups[i + 1].strip()
+                scene_content = scene_groups[i + 2]
+                
+                # 清理场景名称：去除括号及其内容
+                # 例如："街道转角处（靠近医院方向）" -> "街道转角处"
+                scene_name = re.sub(r'[（(].*?[）)]', '', scene_name_raw).strip()
+                
+                # 如果场景名称为空，使用原始名称
+                if not scene_name:
+                    scene_name = scene_name_raw
+                
+                logger.info(f"解析场景组{original_scene_group_no}: {scene_name_raw} -> 清理后: {scene_name}")
+                
+                # 检查是否已存在相同场景名
+                if scene_name in scene_name_to_group:
+                    # 使用已有的场景组号
+                    scene_group_no = scene_name_to_group[scene_name]
+                    logger.info(f"场景'{scene_name}'已存在，合并到场景组{scene_group_no}")
+                else:
+                    # 创建新的场景组号
+                    current_scene_group_no += 1
+                    scene_group_no = current_scene_group_no
+                    scene_name_to_group[scene_name] = scene_group_no
+                    logger.info(f"创建新场景组{scene_group_no}: {scene_name}")
+                
+                # 解析该场景组下的分镜
+                scene_shots = []
+                shot_lines = scene_content.split("分镜")
+                
+                for line in shot_lines[1:]:  # 跳过第一个空元素
+                    try:
+                        # 提取分镜内容
+                        if "：" in line or ":" in line:
+                            parts = line.split("：", 1) if "：" in line else line.split(":", 1)
+                            if len(parts) >= 2:
+                                content = parts[1].strip()
+                                
+                                scene_shots.append({
+                                    "shot_no": global_shot_no,
+                                    "scene_group": scene_group_no,
+                                    "scene_name": scene_name,
+                                    "total_script": content
+                                })
+                                global_shot_no += 1
+                    except Exception as e:
+                        logger.warning(f"解析分镜失败: {str(e)}")
+                        continue
+                
+                # 为该场景组下的分镜添加分镜头组号（每4个为1组）
+                for idx, shot in enumerate(scene_shots):
+                    shot["shot_group"] = (idx // 4) + 1
+                
+                shot_scripts.extend(scene_shots)
+                
+            except Exception as e:
+                logger.warning(f"解析场景组失败: {str(e)}")
+                i += 3
+                continue
+            
+            i += 3
+        
+        # 如果解析失败，返回一个默认分镜
+        if not shot_scripts:
+            logger.warning("场景分组解析失败，使用默认分镜")
+            shot_scripts.append({
+                "shot_no": 1,
+                "scene_group": 1,
+                "scene_name": "默认场景",
+                "shot_group": 1,
+                "total_script": response
+            })
+        
+        logger.info(f"分镜头脚本解析完成，共{len(shot_scripts)}个分镜")
+        return shot_scripts
+    
+    def _parse_shot_scripts_legacy(self, response: str) -> List[Dict[str, Any]]:
+        """旧版解析逻辑（向后兼容）"""
         shot_scripts = []
         
         # 简单的解析逻辑：按"分镜"分割
@@ -676,6 +807,9 @@ class ShotScriptGenerationAgent:
                         
                         shot_scripts.append({
                             "shot_no": idx,
+                            "scene_group": 1,  # 默认场景组
+                            "scene_name": "默认场景",
+                            "shot_group": (idx - 1) // 4 + 1,  # 每4个为1组
                             "total_script": content
                         })
             except Exception as e:
@@ -686,6 +820,9 @@ class ShotScriptGenerationAgent:
         if not shot_scripts:
             shot_scripts.append({
                 "shot_no": 1,
+                "scene_group": 1,
+                "scene_name": "默认场景",
+                "shot_group": 1,
                 "total_script": response
             })
         

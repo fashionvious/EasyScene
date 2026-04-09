@@ -480,11 +480,12 @@ def update_redis_stage_status_sync(
                 )
                 logger.info(f"已更新Redis状态：角色生成完成，进入分镜生成阶段")
             elif stage == "shotlist_script":
-                # 分镜生成完成，更新阶段为WAITING_REVIEW
+                # 分镜生成完成，更新状态为WAITING_REVIEW
+                # 注意：ProjectStage中没有WAITING_REVIEW，只有ProjectStatus有
                 await redis_manager.update_project_state(
                     project_id=script_id,
                     status=ProjectStatus.WAITING_REVIEW,
-                    metadata={"current_stage": ProjectStage.WAITING_REVIEW}
+                    # 不需要更新stage，保持为SHOTLIST_SCRIPT
                 )
                 logger.info(f"已更新Redis状态：分镜生成完成，等待审核")
             
@@ -644,6 +645,10 @@ def save_shot_scripts_to_db(script_id: str, shot_scripts: list) -> bool:
                     script_id=script_uuid,
                     shot_no=shot_data.get("shot_no", 1),
                     total_script=shot_data.get("total_script", ""),
+                    # 添加场景分组相关字段
+                    scene_group=shot_data.get("scene_group", 1),
+                    scene_name=shot_data.get("scene_name", "默认场景"),
+                    shot_group=shot_data.get("shot_group", 1),
                     version=1,
                     create_time=datetime.utcnow(),
                     update_time=datetime.utcnow(),

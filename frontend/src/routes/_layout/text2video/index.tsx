@@ -69,7 +69,7 @@ function Text2VideoIndex() {
   const SCRIPT_NAME_MIN = 1
   const SCRIPT_NAME_MAX = 30
   const SCRIPT_CONTENT_MIN = 10
-  const SCRIPT_CONTENT_MAX = 500
+  const SCRIPT_CONTENT_MAX = 1000
   
   const createScriptMutation = useMutation({
     mutationFn: () => createScript(scriptName, scriptContent),
@@ -122,7 +122,7 @@ function Text2VideoIndex() {
           </div>
           <div className="space-y-2">
             <Label htmlFor="script-content">剧本内容</Label>
-            <Textarea id="script-content" placeholder="请输入剧本内容（10-500字）" value={scriptContent} onChange={(e) => setScriptContent(e.target.value)} maxLength={SCRIPT_CONTENT_MAX} className="min-h-[200px]" disabled={createScriptMutation.isPending} />
+            <Textarea id="script-content" placeholder="请输入剧本内容（10-1000字）" value={scriptContent} onChange={(e) => setScriptContent(e.target.value)} maxLength={SCRIPT_CONTENT_MAX} className="min-h-[200px]" disabled={createScriptMutation.isPending} />
             <p className="text-xs text-muted-foreground">{scriptContent.length} / {SCRIPT_CONTENT_MAX} 字</p>
           </div>
           <Button onClick={handleSubmit} disabled={createScriptMutation.isPending} className="w-full">

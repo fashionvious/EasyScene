@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class CreateScriptRequest(BaseModel):
     """创建剧本请求"""
     script_name: str = Field(..., min_length=1, max_length=30)
-    script_content: str = Field(..., min_length=10, max_length=500)
+    script_content: str = Field(..., min_length=10, max_length=1000)
 
 
 class UpdateSingleCharacterRequest(BaseModel):
@@ -96,6 +96,9 @@ class ShotScriptResponse(BaseModel):
     id: str
     shot_no: int
     total_script: str
+    scene_group: int = 1  # 场景组号
+    scene_name: str = "默认场景"  # 场景名称
+    shot_group: int = 1  # 分镜头组号
 
 
 class ScriptStatusResponse(BaseModel):
@@ -179,7 +182,7 @@ async def api_create_script(
     
     参数:
     - script_name: 剧本名称（1-30字）
-    - script_content: 剧本内容（10-500字）
+    - script_content: 剧本内容（10-1000字）
     
     返回:
     - script_id: 剧本ID
@@ -335,6 +338,9 @@ async def api_get_script_status(
                     id=str(s.id),
                     shot_no=s.shot_no,
                     total_script=s.total_script,
+                    scene_group=s.scene_group,
+                    scene_name=s.scene_name,
+                    shot_group=s.shot_group,
                 )
                 for s in shot_scripts
             ],

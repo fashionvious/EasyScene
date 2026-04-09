@@ -218,6 +218,9 @@ class ShotScriptBase(SQLModel):
     shot_no: int
     version: int = Field(default=1)
     total_script: str
+    scene_group: int = Field(default=1)  # 场景组号
+    scene_name: str = Field(default="默认场景", max_length=255)  # 场景名称
+    shot_group: int = Field(default=1)  # 分镜头组号（每个场景下每4个分镜为1组）
 
 
 # Properties to receive on shot script creation
@@ -232,6 +235,9 @@ class ShotScriptUpdate(SQLModel):
     version: int | None = None
     total_script: str | None = None
     role_id: uuid.UUID | None = None
+    scene_group: int | None = None
+    scene_name: str | None = Field(default=None, max_length=255)
+    shot_group: int | None = None
 
 
 # Database model for shot_script table
