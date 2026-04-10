@@ -57,6 +57,13 @@ class ConfirmCharacterThreeViewRequest(BaseModel):
     character_id: str
 
 
+class GenerateBackgroundRequest(BaseModel):
+    """生成场景背景图请求"""
+    scene_group_no: int
+    scene_name: str
+    shot_scripts: List[dict]
+
+
 # --- 响应模型 ---
 
 class CreateScriptResponse(BaseModel):
@@ -117,6 +124,16 @@ class UpdateShotsResponse(BaseModel):
     """更新分镜头脚本响应"""
     message: str
     shot_scripts: List[ShotScriptResponse]
+
+
+class GenerateBackgroundResponse(BaseModel):
+    """生成场景背景图响应"""
+    success: bool
+    script_id: str
+    scene_group: int
+    scene_name: str
+    background_image_path: str
+    message: str
 
 
 class ScriptListItem(BaseModel):
@@ -663,3 +680,78 @@ async def api_update_shots(
         raise HTTPException(status_code=500, detail=f"更新分镜头脚本失败: {str(e)}")
     finally:
         await redis_manager.close()
+
+
+@router.post("/text2video/generate-background/{script_id}", response_model=GenerateBackgroundResponse)
+async def api_generate_scene_background(
+    script_id: str,
+    request: GenerateBackgroundRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    为指定场景组生成背景图
+    
+    参数:
+    - script_id: 剧本ID
+    - scene_group_no: 场景组号
+    - scene_name: 场景名称
+    - shot_scripts: 该场景组下的所有分镜脚本
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - scene_group: 场景组号
+    - scene_name: 场景名称
+    - background_image_path: 背景图路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询剧本
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        # 检查权限
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成背景图")
+        
+        # 触发Celery任务生成背景图
+        from app.agent.generateVideo.tasks import generate_scene_background_task
+        
+        task = generate_scene_background_task.delay(
+            script_id=script_id,
+            scene_group_no=request.scene_group_no,
+            scene_name=request.scene_name,
+            shot_scripts=request.shot_scripts,
+            user_id=str(current_user.id),
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateBackgroundResponse(
+            success=True,
+            script_id=script_id,
+            scene_group=request.scene_group_no,
+            scene_name=request.scene_name,
+            background_image_path="",  # 异步生成，路径稍后通过轮询获取
+            message=f"场景组{request.scene_group_no}背景图生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成背景图失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+

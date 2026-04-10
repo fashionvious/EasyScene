@@ -861,4 +861,100 @@ def update_character_three_view_in_db(
     except Exception as e:
         logger.error(f"更新角色四视图路径到数据库失败: {str(e)}")
         return False
-    
+
+
+@celery_app.task(bind=True)
+def generate_scene_background_task(
+    self,
+    script_id: str,
+    scene_group_no: int,
+    scene_name: str,
+    shot_scripts: list,
+    user_id: str,
+) -> Dict[str, Any]:
+    """
+    为指定场景组生成背景图
+
+    参数:
+    - script_id: 剧本ID
+    - scene_group_no: 场景组号
+    - scene_name: 场景名称
+    - shot_scripts: 该场景组下的所有分镜脚本
+    - user_id: 用户ID
+
+    返回:
+    - 生成结果
+    """
+    async def run():
+        redis_manager = get_video_project_manager()
+
+        try:
+            # 更新项目状态为运行中
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.RUNNING,
+                task_id=self.request.id,
+            )
+
+            logger.info(f"开始为场景组{scene_group_no}生成背景图，剧本ID: {script_id}")
+
+            # 导入 SceneBackgroundAgent
+            from app.agent.generateVideo.text2video import SceneBackgroundAgent
+            from app.agent.generatePic.llm_client import HelloAgentsLLM
+
+            # 初始化LLM客户端
+            llm_client = HelloAgentsLLM()
+
+            # 创建 SceneBackgroundAgent 实例
+            background_agent = SceneBackgroundAgent(llm_client, script_id)
+
+            # 生成背景图
+            result = background_agent.generate_background_for_scene_group(
+                scene_group_no=scene_group_no,
+                scene_name=scene_name,
+                shot_scripts=shot_scripts,
+                script_id=script_id
+            )
+
+            # 检查是否有错误
+            if result.get("error"):
+                await redis_manager.update_project_state(
+                    project_id=script_id,
+                    status=ProjectStatus.FAILED,
+                    error_message=result["error"],
+                )
+                return result
+
+            # 更新Redis状态
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.WAITING_REVIEW,
+            )
+
+            logger.info(f"场景组{scene_group_no}背景图生成完成，剧本ID: {script_id}")
+
+            return {
+                "success": True,
+                "script_id": script_id,
+                "scene_group": scene_group_no,
+                "scene_name": scene_name,
+                "background_image_path": result.get("background_image_path", ""),
+                "message": f"场景组{scene_group_no}背景图生成完成",
+            }
+
+        except Exception as e:
+            logger.error(f"场景背景图生成失败: {str(e)}")
+
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.FAILED,
+                error_message=str(e),
+            )
+
+            raise e
+
+        finally:
+            await redis_manager.close()
+
+    return asyncio.run(run())
+

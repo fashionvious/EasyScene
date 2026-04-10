@@ -10,6 +10,7 @@ import {
   Users,
   Film,
   X,
+  AlertTriangle,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -31,6 +32,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 // 类型定义
 interface CharacterInfo {
@@ -203,6 +212,44 @@ async function confirmCharacterThreeView(
   return response.json()
 }
 
+// 5. 生成场景背景图API
+interface GenerateBackgroundResponse {
+  success: boolean
+  script_id: string
+  scene_group: number
+  scene_name: string
+  background_image_path: string
+  message: string
+}
+
+async function generateSceneBackground(
+  scriptId: string,
+  sceneGroupNo: number,
+  sceneName: string,
+  shotScripts: ShotScript[],
+): Promise<GenerateBackgroundResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-background/${scriptId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      scene_group_no: sceneGroupNo,
+      scene_name: sceneName,
+      shot_scripts: shotScripts,
+    }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `生成背景图失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 export const Route = createFileRoute("/_layout/text2video/$scriptId")({
   component: ScriptDetail,
   head: () => ({
@@ -268,6 +315,10 @@ function ScriptDetail() {
   const [updatingCharacterId, setUpdatingCharacterId] = useState<string | null>(null)
   const [confirmingCharacterId, setConfirmingCharacterId] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [generatingBackgroundScene, setGeneratingBackgroundScene] = useState<number | null>(null) // 正在生成背景图的场景组号
+  const [sceneBackgrounds, setSceneBackgrounds] = useState<Map<number, string>>(new Map()) // 场景组号 -> 背景图路径
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false) // 确认对话框是否打开
+  const [pendingSceneGroup, setPendingSceneGroup] = useState<{ sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[] } | null>(null) // 待确认的场景组信息
 
   // 使用 ref 跟踪是否应该接受远程更新
   const shouldAcceptRemoteUpdateRef = useRef(true)
@@ -398,6 +449,50 @@ function ScriptDetail() {
     },
   })
 
+  // 生成场景背景图
+  const handleGenerateBackground = async (sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[]) => {
+    setGeneratingBackgroundScene(sceneGroupNo)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const result = await generateSceneBackground(scriptId, sceneGroupNo, sceneName, sceneShots)
+      setSuccessMessage(result.message || `场景组${sceneGroupNo}背景图生成任务已启动`)
+
+      // 10秒后清除成功消息
+      setTimeout(() => setSuccessMessage(null), 10000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成背景图失败")
+    } finally {
+      setGeneratingBackgroundScene(null)
+    }
+  }
+
+  // 打开确认对话框
+  const openConfirmDialog = (sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[]) => {
+    setPendingSceneGroup({ sceneGroupNo, sceneName, sceneShots })
+    setConfirmDialogOpen(true)
+  }
+
+  // 确认提交
+  const handleConfirmSubmit = () => {
+    if (pendingSceneGroup) {
+      handleGenerateBackground(
+        pendingSceneGroup.sceneGroupNo,
+        pendingSceneGroup.sceneName,
+        pendingSceneGroup.sceneShots
+      )
+    }
+    setConfirmDialogOpen(false)
+    setPendingSceneGroup(null)
+  }
+
+  // 取消提交
+  const handleCancelSubmit = () => {
+    setConfirmDialogOpen(false)
+    setPendingSceneGroup(null)
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
@@ -431,6 +526,36 @@ function ScriptDetail() {
           onClose={() => setPreviewImage(null)} 
         />
       )}
+
+      {/* 确认对话框 */}
+      <Dialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              确认提交
+            </DialogTitle>
+            <DialogDescription className="text-base pt-2">
+              此操作消耗token较多，请确定内容已满意。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCancelSubmit}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmSubmit}
+            >
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       
       <div className="flex flex-col gap-6">
         {/* 页面标题 */}
@@ -621,14 +746,51 @@ function ScriptDetail() {
                 {Array.from(new Set(editableShots.map(shot => shot.scene_group))).map(sceneGroupNo => {
                   const sceneShots = editableShots.filter(shot => shot.scene_group === sceneGroupNo)
                   const sceneName = sceneShots[0]?.scene_name || "默认场景"
+                  const isGeneratingBackground = generatingBackgroundScene === sceneGroupNo
+                  const backgroundImagePath = sceneBackgrounds.get(sceneGroupNo)
                   
                   return (
                     <div key={sceneGroupNo} className="space-y-4">
-                      {/* 场景组标题 */}
-                      <div className="flex items-center gap-2 bg-muted/50 px-4 py-2 rounded-lg">
-                        <Film className="h-4 w-4 text-purple-500" />
-                        <span className="font-semibold">场景组{sceneGroupNo}：{sceneName}</span>
+                      {/* 场景组标题和提交按钮 */}
+                      <div className="flex items-center justify-between bg-muted/50 px-4 py-2 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <Film className="h-4 w-4 text-purple-500" />
+                          <span className="font-semibold">场景组{sceneGroupNo}：{sceneName}</span>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => openConfirmDialog(sceneGroupNo, sceneName, sceneShots)}
+                          disabled={isGeneratingBackground}
+                        >
+                          {isGeneratingBackground ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                              生成中...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="h-4 w-4 mr-1" />
+                              提交场景组
+                            </>
+                          )}
+                        </Button>
                       </div>
+
+                      {/* 背景图显示 */}
+                      {backgroundImagePath && (
+                        <div className="border rounded-lg p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Film className="h-4 w-4 text-purple-500" />
+                            <span className="text-sm font-medium">场景背景图</span>
+                          </div>
+                          <img
+                            src={convertImagePathToUrl(backgroundImagePath, scriptId)!}
+                            alt={`场景组${sceneGroupNo}背景图`}
+                            className="w-full max-w-2xl rounded cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={() => setPreviewImage(backgroundImagePath)}
+                          />
+                        </div>
+                      )}
                       
                       {/* 按分镜头组显示 */}
                       {Array.from(new Set(sceneShots.map(shot => shot.shot_group))).map(shotGroupNo => {
@@ -641,32 +803,6 @@ function ScriptDetail() {
                               <span className="text-sm font-medium text-muted-foreground">
                                 分镜头组 {shotGroupNo}
                               </span>
-                              {/* 添加提交和确定按钮 */}
-                              <div className="flex gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    // TODO: 提交该分镜头组的功能（演示）
-                                    console.log(`提交场景${sceneGroupNo}分镜头组${shotGroupNo}`)
-                                  }}
-                                  disabled={updateShotsMutation.isPending}
-                                >
-                                  <Check className="h-4 w-4 mr-1" />
-                                  提交
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  onClick={() => {
-                                    // TODO: 确定该分镜头组的功能（演示）
-                                    console.log(`确定场景${sceneGroupNo}分镜头组${shotGroupNo}`)
-                                  }}
-                                  disabled={updateShotsMutation.isPending}
-                                >
-                                  <Check className="h-4 w-4 mr-1" />
-                                  确定
-                                </Button>
-                              </div>
                             </div>
                             
                             {/* 分镜内容 */}
