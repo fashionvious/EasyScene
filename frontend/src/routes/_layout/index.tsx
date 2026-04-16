@@ -85,26 +85,29 @@ function Dashboard() {
   return (
     <div className="p-6 md:p-8">
       <div>
-        <h1 className="text-2xl truncate max-w-sm">
+        <h1 className="heading-card truncate max-w-sm mb-2">
           Hi, {currentUser?.full_name || currentUser?.email} 👋
         </h1>
-        <p className="text-muted-foreground">
+        <p className="text-muted-foreground text-body-semibold mb-8">
           Welcome back, nice to see you again!!!
         </p>
-        <br/> 
-        <h2 className="text-5xl font-black mb-5">
-        Bilibili 授权登录
+
+        <h2 className="heading-sub mb-6">
+          Bilibili 授权登录
         </h2>
-           
+
       {/* 提示文字 */}
-      <p className="text-2xl  mb-8">
-        为了使用B站相关功能，请先授权登录
+      <p className="heading-feature mb-8">
+        为了使用B站相关功能,请先授权登录
       </p>
 
        {/* 登录成功提示 */}
        {isLoginSuccess ? (
-        <div className="text-green-400 text-xl font-semibold">
-          您已登录b站成功！
+        <div className="text-[#054d28] heading-feature flex items-center gap-2">
+          <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+          您已登录b站成功!
         </div>
       ) : (
         <>
@@ -112,7 +115,7 @@ function Dashboard() {
           {!qrCodeUrl && (
             <button
               onClick={fetchQRCode}
-              className="px-6 py-3 bg-pink-500 hover:bg-pink-600 text-white font-semibold rounded-lg transition-colors"
+              className="wise-pill-button text-lg"
             >
               获取B站登陆二维码
             </button>
@@ -121,12 +124,14 @@ function Dashboard() {
           {/* 二维码显示区域 */}
           {qrCodeUrl && (
             <div className="flex flex-col items-center">
-              <img 
-                src={qrCodeUrl} 
-                alt="B站登录二维码" 
-                className="w-48 h-48 border-4 border-white rounded-lg"
-              />
-              <p className="text-white mt-4 animate-pulse">
+              <div className="wise-card p-6 mb-4">
+                <img
+                  src={qrCodeUrl}
+                  alt="B站登录二维码"
+                  className="w-48 h-48"
+                />
+              </div>
+              <p className="text-primary text-body-semibold animate-pulse">
                 请使用B站APP扫描二维码...
               </p>
             </div>
@@ -134,7 +139,7 @@ function Dashboard() {
 
           {/* 错误提示 */}
           {error && (
-            <p className="text-red-400 mt-4">{error}</p>
+            <p className="text-destructive mt-4 text-body-semibold">{error}</p>
           )}
         </>
       )}

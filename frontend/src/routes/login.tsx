@@ -75,7 +75,7 @@ function Login() {
           className="flex flex-col gap-6"
         >
           <div className="flex flex-col items-center gap-2 text-center">
-            <h1 className="text-2xl font-bold">Login to your account</h1>
+            <h1 className="heading-card">Login to your account</h1>
           </div>
 
           <div className="grid gap-4">
@@ -84,7 +84,7 @@ function Login() {
               name="username"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Email</FormLabel>
+                  <FormLabel className="text-body-semibold">Email</FormLabel>
                   <FormControl>
                     <Input
                       data-testid="email-input"
@@ -93,7 +93,7 @@ function Login() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage className="text-xs" />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
@@ -104,10 +104,10 @@ function Login() {
               render={({ field }) => (
                 <FormItem>
                   <div className="flex items-center">
-                    <FormLabel>Password</FormLabel>
+                    <FormLabel className="text-body-semibold">Password</FormLabel>
                     <RouterLink
                       to="/recover-password"
-                      className="ml-auto text-sm underline-offset-4 hover:underline"
+                      className="ml-auto text-caption text-primary hover:underline underline-offset-4"
                     >
                       Forgot your password?
                     </RouterLink>
@@ -119,19 +119,19 @@ function Login() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage className="text-xs" />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
 
-            <LoadingButton type="submit" loading={loginMutation.isPending}>
+            <LoadingButton type="submit" loading={loginMutation.isPending} size="lg">
               Log In
             </LoadingButton>
           </div>
 
-          <div className="text-center text-sm">
+          <div className="text-center text-caption">
             Don't have an account yet?{" "}
-            <RouterLink to="/signup" className="underline underline-offset-4">
+            <RouterLink to="/signup" className="text-primary hover:underline underline-offset-4 font-semibold">
               Sign up
             </RouterLink>
           </div>

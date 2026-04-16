@@ -33,11 +33,11 @@ function ItemsTableContent() {
   if (items.data.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center text-center py-12">
-        <div className="rounded-full bg-muted p-4 mb-4">
-          <Search className="h-8 w-8 text-muted-foreground" />
+        <div className="rounded-full bg-[#e2f6d5] dark:bg-[rgba(159,232,112,0.2)] p-4 mb-4">
+          <Search className="h-8 w-8 text-primary" />
         </div>
-        <h3 className="text-lg font-semibold">You don't have any items yet</h3>
-        <p className="text-muted-foreground">Add a new item to get started</p>
+        <h3 className="heading-feature mb-2">You don't have any items yet</h3>
+        <p className="text-muted-foreground text-body-semibold">Add a new item to get started</p>
       </div>
     )
   }
@@ -58,8 +58,8 @@ function Items() {
     <div className="flex flex-col gap-6 p-6 md:p-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Items</h1>
-          <p className="text-muted-foreground">Create and manage your items</p>
+          <h1 className="heading-card mb-2">Items</h1>
+          <p className="text-muted-foreground text-body-semibold">Create and manage your items</p>
         </div>
         <AddItem />
       </div>

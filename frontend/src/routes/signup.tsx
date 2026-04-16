@@ -87,7 +87,7 @@ function SignUp() {
           className="flex flex-col gap-6"
         >
           <div className="flex flex-col items-center gap-2 text-center">
-            <h1 className="text-2xl font-bold">Create an account</h1>
+            <h1 className="heading-card">Create an account</h1>
           </div>
 
           <div className="grid gap-4">
@@ -96,7 +96,7 @@ function SignUp() {
               name="full_name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Full Name</FormLabel>
+                  <FormLabel className="text-body-semibold">Full Name</FormLabel>
                   <FormControl>
                     <Input
                       data-testid="full-name-input"
@@ -105,7 +105,7 @@ function SignUp() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
@@ -115,7 +115,7 @@ function SignUp() {
               name="email"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Email</FormLabel>
+                  <FormLabel className="text-body-semibold">Email</FormLabel>
                   <FormControl>
                     <Input
                       data-testid="email-input"
@@ -124,7 +124,7 @@ function SignUp() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
@@ -134,7 +134,7 @@ function SignUp() {
               name="password"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Password</FormLabel>
+                  <FormLabel className="text-body-semibold">Password</FormLabel>
                   <FormControl>
                     <PasswordInput
                       data-testid="password-input"
@@ -142,7 +142,7 @@ function SignUp() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
@@ -152,7 +152,7 @@ function SignUp() {
               name="confirm_password"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Confirm Password</FormLabel>
+                  <FormLabel className="text-body-semibold">Confirm Password</FormLabel>
                   <FormControl>
                     <PasswordInput
                       data-testid="confirm-password-input"
@@ -160,7 +160,7 @@ function SignUp() {
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage />
+                  <FormMessage className="text-caption" />
                 </FormItem>
               )}
             />
@@ -169,14 +169,15 @@ function SignUp() {
               type="submit"
               className="w-full"
               loading={signUpMutation.isPending}
+              size="lg"
             >
               Sign Up
             </LoadingButton>
           </div>
 
-          <div className="text-center text-sm">
+          <div className="text-center text-caption">
             Already have an account?{" "}
-            <RouterLink to="/login" className="underline underline-offset-4">
+            <RouterLink to="/login" className="text-primary hover:underline underline-offset-4 font-semibold">
               Log in
             </RouterLink>
           </div>

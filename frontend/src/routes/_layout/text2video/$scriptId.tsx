@@ -56,6 +56,7 @@ interface ShotScript {
   scene_group: number  // 场景组号
   scene_name: string   // 场景名称
   shot_group: number   // 分镜头组号
+  grid_image_path?: string | null  // 九宫格图片路径
 }
 
 interface ScriptStatusResponse {
@@ -79,6 +80,13 @@ interface SingleCharacterResponse {
 interface UpdateShotsResponse {
   message: string
   shot_scripts: ShotScript[]
+}
+
+interface UpdateSingleShotResponse {
+  id: string
+  shot_no: number
+  total_script: string
+  message: string
 }
 
 interface ConfirmThreeViewResponse {
@@ -190,6 +198,29 @@ async function updateShots(
   return response.json()
 }
 
+// 3.5 更新单个分镜头脚本API
+async function updateSingleShot(
+  shotId: string,
+  totalScript: string,
+): Promise<UpdateSingleShotResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/shot/${shotId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({ total_script: totalScript }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `更新分镜头脚本失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 // 4. 确认角色四视图API
 async function confirmCharacterThreeView(
   characterId: string,
@@ -246,6 +277,43 @@ async function generateSceneBackground(
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.detail || `生成背景图失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+// 6. 生成九宫格图片API
+interface GenerateGridImageResponse {
+  success: boolean
+  script_id: string
+  shot_no: number
+  grid_image_path: string
+  message: string
+}
+
+async function generateGridImage(
+  scriptId: string,
+  shotNo: number,
+  shotScriptText: string,
+  sceneGroupNo: number,
+): Promise<GenerateGridImageResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-grid-image/${scriptId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      shot_no: shotNo,
+      shot_script_text: shotScriptText,
+      scene_group_no: sceneGroupNo,
+    }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `生成九宫格图片失败: ${response.statusText}`)
   }
   return response.json()
 }
@@ -319,6 +387,7 @@ function ScriptDetail() {
   const [sceneBackgrounds, setSceneBackgrounds] = useState<Map<number, string>>(new Map()) // 场景组号 -> 背景图路径
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false) // 确认对话框是否打开
   const [pendingSceneGroup, setPendingSceneGroup] = useState<{ sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[] } | null>(null) // 待确认的场景组信息
+  const [generatingGridShot, setGeneratingGridShot] = useState<number | null>(null) // 正在生成九宫格图片的分镜号
 
   // 使用 ref 跟踪是否应该接受远程更新
   const shouldAcceptRemoteUpdateRef = useRef(true)
@@ -493,6 +562,25 @@ function ScriptDetail() {
     setPendingSceneGroup(null)
   }
 
+  // 生成九宫格图片
+  const handleGenerateGridImage = async (shotNo: number, shotScriptText: string, sceneGroupNo: number) => {
+    setGeneratingGridShot(shotNo)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const result = await generateGridImage(scriptId, shotNo, shotScriptText, sceneGroupNo)
+      setSuccessMessage(result.message || `分镜${shotNo}九宫格图片生成任务已启动`)
+
+      // 10秒后清除成功消息
+      setTimeout(() => setSuccessMessage(null), 10000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成九宫格图片失败")
+    } finally {
+      setGeneratingGridShot(null)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
@@ -536,7 +624,7 @@ function ScriptDetail() {
               确认提交
             </DialogTitle>
             <DialogDescription className="text-base pt-2">
-              此操作消耗token较多，请确定内容已满意。
+              此操作消耗token较多，请确定当前场景组内容已满意。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="sm:justify-end gap-2">
@@ -795,25 +883,31 @@ function ScriptDetail() {
                       {/* 按分镜头组显示 */}
                       {Array.from(new Set(sceneShots.map(shot => shot.shot_group))).map(shotGroupNo => {
                         const groupShots = sceneShots.filter(shot => shot.shot_group === shotGroupNo)
-                        
+
                         return (
                           <div key={`${sceneGroupNo}-${shotGroupNo}`} className="border rounded-lg p-4 space-y-3">
-                            {/* 分镜头组标题 */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-muted-foreground">
-                                分镜头组 {shotGroupNo}
-                              </span>
-                            </div>
-                            
                             {/* 分镜内容 */}
                             {groupShots.map((shot, index) => {
                               const shotIndex = editableShots.findIndex(s => s.id === shot.id)
+                              const isGeneratingGrid = generatingGridShot === shot.shot_no
+                              const hasGridImage = !!convertImagePathToUrl(shot.grid_image_path, scriptId)
                               return (
                                 <div key={shot.id || index} className="space-y-2">
                                   <div className="flex items-start gap-3">
-                                    <span className="text-sm font-medium min-w-[60px] pt-2">
-                                      分镜{shot.shot_no}
-                                    </span>
+                                    <div className="flex flex-col items-center min-w-[60px] pt-2">
+                                      <span className="text-sm font-medium">
+                                        分镜{shot.shot_no}
+                                      </span>
+                                      {/* 九宫格预览图 */}
+                                      {hasGridImage ? (
+                                        <img
+                                          src={convertImagePathToUrl(shot.grid_image_path, scriptId)!}
+                                          alt={`分镜${shot.shot_no}九宫格`}
+                                          className="w-12 h-8 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity mt-1"
+                                          onClick={() => setPreviewImage(shot.grid_image_path!)}
+                                        />
+                                      ) : null}
+                                    </div>
                                     <Textarea
                                       value={shot.total_script}
                                       onChange={(e) => {
@@ -826,6 +920,58 @@ function ScriptDetail() {
                                       disabled={updateShotsMutation.isPending}
                                       className="min-h-[80px] flex-1"
                                     />
+                                  </div>
+                                  {/* 提交和确定按钮 */}
+                                  <div className="flex justify-end gap-2">
+                                    <Button
+                                      size="sm"
+                                      onClick={async () => {
+                                        // 先更新数据库中的total_script，再生成九宫格图片
+                                        setGeneratingGridShot(shot.shot_no)
+                                        setError(null)
+                                        setSuccessMessage(null)
+                                        try {
+                                          await updateSingleShot(shot.id, shot.total_script)
+                                          const result = await generateGridImage(scriptId, shot.shot_no, shot.total_script, sceneGroupNo)
+                                          setSuccessMessage(result.message || `分镜${shot.shot_no}已提交，九宫格图片生成任务已启动`)
+                                          // 更新原始数据，解除编辑锁定
+                                          setOriginalShots([...editableShots])
+                                          shouldAcceptRemoteUpdateRef.current = true
+                                          setTimeout(() => setSuccessMessage(null), 10000)
+                                        } catch (err) {
+                                          setError(err instanceof Error ? err.message : "提交失败")
+                                        } finally {
+                                          setGeneratingGridShot(null)
+                                        }
+                                      }}
+                                      disabled={isGeneratingGrid || updateShotsMutation.isPending}
+                                    >
+                                      {isGeneratingGrid ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                          生成中
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="h-4 w-4 mr-1" />
+                                          提交
+                                        </>
+                                      )}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        // 确认当前分镜内容，恢复原始数据
+                                        const newShots = [...editableShots]
+                                        newShots[shotIndex] = originalShots[shotIndex]
+                                        setEditableShots(newShots)
+                                      }}
+                                      disabled={updateShotsMutation.isPending}
+                                    >
+                                      <Check className="h-4 w-4 mr-1" />
+                                      确定
+                                    </Button>
                                   </div>
                                 </div>
                               )

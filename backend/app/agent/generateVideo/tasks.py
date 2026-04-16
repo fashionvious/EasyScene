@@ -33,15 +33,9 @@ from app.agent.utils.redis import (
 from app.core.db import engine
 from app.models import CharacterInfo, ShotScript, Script
 
-# 日志配置
+# 日志配置 - 使用Celery的日志系统，避免重复
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-))
-logger.addHandler(handler)
+# 不手动添加handler，让Celery自动处理日志配置
 
 
 # ============================================================================
@@ -958,3 +952,155 @@ def generate_scene_background_task(
 
     return asyncio.run(run())
 
+
+
+@celery_app.task(bind=True)
+def generate_grid_image_task(
+    self,
+    script_id: str,
+    shot_no: int,
+    shot_script_text: str,
+    scene_group_no: int,
+    user_id: str,
+) -> Dict[str, Any]:
+    """
+    为指定分镜生成九宫格图片（异步Celery任务，调用GridImageAgent）
+
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shot_script_text: 分镜脚本内容
+    - scene_group_no: 场景组号，用于匹配场景背景图
+    - user_id: 用户ID
+
+    返回:
+    - 生成结果
+    """
+    async def run():
+        redis_manager = get_video_project_manager()
+
+        try:
+            # 更新项目状态为运行中
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.RUNNING,
+                task_id=self.request.id,
+            )
+
+            logger.info(f"开始为分镜{shot_no}生成九宫格图片，剧本ID: {script_id}")
+
+            # 导入GridImageAgent和LLM客户端
+            from app.agent.generateVideo.text2video import GridImageAgent
+            from app.agent.generatePic.llm_client import HelloAgentsLLM
+
+            # 初始化LLM客户端
+            llm_client = HelloAgentsLLM()
+
+            # 创建GridImageAgent实例
+            grid_agent = GridImageAgent(llm_client, script_id)
+
+            # 调用Agent生成九宫格图片
+            result = grid_agent.generate_grid_image(
+                shot_no=shot_no,
+                shot_script_text=shot_script_text,
+                scene_group_no=scene_group_no,
+                script_id=script_id,
+            )
+
+            # 检查是否有错误
+            if result.get("error"):
+                await redis_manager.update_project_state(
+                    project_id=script_id,
+                    status=ProjectStatus.FAILED,
+                    error_message=result["error"],
+                )
+                return result
+
+            # 更新数据库中的grid_image_path
+            grid_image_path = result.get("grid_image_path", "")
+            if grid_image_path:
+                update_success = update_shot_grid_image_in_db(
+                    script_id=script_id,
+                    shot_no=shot_no,
+                    grid_image_path=grid_image_path,
+                )
+                if not update_success:
+                    logger.warning(f"九宫格图片路径更新到数据库失败")
+
+            # 更新Redis状态
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.WAITING_REVIEW,
+            )
+
+            logger.info(f"分镜{shot_no}九宫格图片生成完成，剧本ID: {script_id}")
+
+            return {
+                "success": True,
+                "script_id": script_id,
+                "shot_no": shot_no,
+                "grid_image_path": grid_image_path,
+                "message": f"分镜{shot_no}九宫格图片生成完成",
+            }
+
+        except Exception as e:
+            logger.error(f"九宫格图片生成失败: {str(e)}")
+
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.FAILED,
+                error_message=str(e),
+            )
+
+            raise e
+
+        finally:
+            await redis_manager.close()
+
+    return asyncio.run(run())
+
+
+def update_shot_grid_image_in_db(
+    script_id: str,
+    shot_no: int,
+    grid_image_path: str,
+) -> bool:
+    """
+    更新分镜九宫格图片路径到数据库
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - grid_image_path: 九宫格图片路径
+    
+    返回:
+    - 是否更新成功
+    """
+    try:
+        with Session(engine) as session:
+            # 将script_id转换为UUID
+            script_uuid = uuid.UUID(script_id)
+            
+            # 查找对应的分镜
+            from sqlmodel import select
+            statement = select(ShotScript).where(
+                ShotScript.script_id == script_uuid,
+                ShotScript.shot_no == shot_no,
+                ShotScript.is_deleted == 0
+            )
+            shot = session.exec(statement).first()
+            
+            if shot:
+                shot.grid_image_path = grid_image_path
+                shot.update_time = datetime.utcnow()
+                session.add(shot)
+                session.commit()
+                logger.info(f"成功更新分镜{shot_no}的九宫格图片路径到数据库")
+                return True
+            else:
+                logger.warning(f"未找到分镜{shot_no}，无法更新九宫格图片路径")
+                return False
+                
+    except Exception as e:
+        logger.error(f"更新分镜九宫格图片路径到数据库失败: {str(e)}")
+        return False

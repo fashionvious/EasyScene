@@ -420,7 +420,7 @@ class CharacterThreeViewAgent:
 
         return state
     
-    def _generate_three_view_prompt(self, role_name: str, role_desc: str) -> str:
+    def c(self, role_name: str, role_desc: str) -> str:
         """使用qwen3.5-plus生成四视图提示词"""
         prompt = f"""你是一个熟悉各类 AI 绘画模型底层的顶级提示词工程师。你的任务是根据用户的简单描述，生成用于AI视频生成的"高质量角色四视图"中文提示词。
 
@@ -551,6 +551,275 @@ Output Format
             return str(image_path)
         except Exception as e:
             logger.error(f"下载或保存图片失败: {e}")
+            return ""
+
+
+class GridImageAgent:
+    """九宫格图片生成Agent节点"""
+    
+    def __init__(self, llm_client: HelloAgentsLLM, script_id: str = None):
+        self.llm_client = llm_client
+        self.script_id = script_id
+        # 获取API Key
+        self.api_key = os.getenv("DASHSCOPE_API_KEY")
+        if not self.api_key:
+            raise ValueError("请在.env文件中设置DASHSCOPE_API_KEY")
+
+    def _get_image_output_dir(self, script_id: str) -> Path:
+        """根据 script_id 获取图片输出目录"""
+        base_dir = Path(__file__).resolve().parents[3]
+        if script_id:
+            image_output_dir = base_dir / script_id / "generated_images"
+        else:
+            image_output_dir = base_dir / "generated_images"
+        image_output_dir.mkdir(parents=True, exist_ok=True)
+        return image_output_dir
+
+    def generate_grid_image(
+        self,
+        shot_no: int,
+        shot_script_text: str,
+        scene_group_no: int,
+        script_id: str,
+    ) -> Dict[str, Any]:
+        """
+        为指定分镜生成九宫格图片
+
+        参数:
+        - shot_no: 分镜号
+        - shot_script_text: 分镜脚本内容
+        - scene_group_no: 场景组号，用于匹配场景背景图
+        - script_id: 剧本ID
+
+        返回:
+        - {"shot_no": shot_no, "grid_image_path": "xxx"} 或 {"shot_no": shot_no, "error": "xxx"}
+        """
+        logger.info(f"开始为分镜{shot_no}生成九宫格图片，场景组: {scene_group_no}")
+
+        # 获取图片输出目录
+        image_output_dir = self._get_image_output_dir(script_id)
+        logger.info(f"图片输出目录: {image_output_dir}")
+
+        try:
+            # Step 1: 生成九宫格图片提示词
+            grid_prompt = self._generate_grid_prompt(shot_script_text)
+            if not grid_prompt:
+                logger.warning(f"分镜{shot_no}的九宫格提示词生成失败")
+                return {"shot_no": shot_no, "grid_image_path": "", "error": "九宫格提示词生成失败"}
+
+            logger.info(f"生成的九宫格提示词: {grid_prompt}")
+
+            # Step 2: 收集参考图片
+            background_images, character_images = self._collect_reference_images(
+                image_output_dir, scene_group_no, script_id
+            )
+            logger.info(f"场景背景图数量: {len(background_images)}, 角色四视图数量: {len(character_images)}")
+
+            # Step 3: 使用ImageGeneration.call生成九宫格图片
+            image_path = self._generate_grid_image_with_api(
+                "最重要的一点，请务必遵循：将下列9个panel根据描述分别生成一张图片，然后按顺序拼到一起构成一张分镜头九宫格图片。"+grid_prompt, background_images, character_images,
+                shot_no, image_output_dir
+            )
+
+            if image_path:
+                logger.info(f"分镜{shot_no}的九宫格图片生成完成，图片路径: {image_path}")
+                return {"shot_no": shot_no, "grid_image_path": image_path}
+            else:
+                logger.warning(f"分镜{shot_no}的九宫格图片生成失败")
+                return {"shot_no": shot_no, "grid_image_path": "", "error": "九宫格图片生成失败"}
+
+        except Exception as e:
+            logger.error(f"九宫格图片生成失败: {str(e)}")
+            return {"shot_no": shot_no, "grid_image_path": "", "error": str(e)}
+
+    def _generate_grid_prompt(self, shot_script_text: str) -> str:
+        """使用LLM生成九宫格图片提示词"""
+        prompt = f"""你是一位拥有顶级工业标准的影视级分镜导演。你的任务是根据我提供的【分镜头脚本】，批量生成高质量的、可直接用于AI视频/图像生成的中文提示词。
+
+【核心规则】
+1. 布局与画幅：强制输出 3x3 的九宫格故事板布局，单格严格遵循 16:9 比例。必须在画面中画出清晰的网格线，将画面物理分割为9个独立的画格。
+2. 角色与环境一致性：提取四视图核心特征，在9个关键动作帧中严格锁定出场角色的面部、发型、身材等固定特征（图片中有标记角色名，且上传的图片文件中也包含角色名，你可以用于区分）；提取背景图片特征，强调光源方向一致性与背景空间逻辑（符合180度轴线原则）。
+3. 动作连贯推演：将每个脚本的动作合理拆解为 Panel 1 到 Panel 9 的连贯互动，必须逐个Panel详细描述，严禁将多个Panel合并描述。
+4. 视觉风格：优先分析脚本适合的风格，信息不足时默认使用：影视级光影、2K分辨率、高精度渲染（C4D Octane Render / 高质量写实风格）。
+5. 极致锁定：100% 遵循三视图的面部、发型、体貌特征，绝不乱改角色外观，保证九宫格9个镜头角色完全一致。强化影视级光影、质感与艺术表现力。
+
+【输入脚本】
+{shot_script_text}
+
+【输出要求】
+1. 严格对应输入的脚本数量，生成同等数量的提示词。
+2. 每条提示词约 150-200 字，必须是一段连贯的、可直接喂给AI的中文提示词。
+3. 提示词末尾必须加上参数 --ar 16:9。
+4. 严禁输出任何解释性废话，只按以下格式模板输出：
+comic storyboard, 3x3 grid layout, 9 distinct panels with white borders, 单格16:9.
+Panel 1 (左上): [景别]+[核心动作]
+Panel 2 (中上): [景别]+[核心动作]
+Panel 3 (右上): [景别]+[核心动作]
+Panel 4 (左中): [景别]+[核心动作]
+Panel 5 (正中): [景别]+[核心动作]
+Panel 6 (右中): [景别]+[核心动作]
+Panel 7 (左下): [景别]+[核心动作]
+Panel 8 (中下): [景别]+[核心动作]
+Panel 9 (右下): [景别]+[核心动作]
+全局锁定: [角色外貌特征], [环境与背景], [光源与风格] --ar 16:9
+
+【极简原则】
+每个Panel的描述必须极度精简，不超过20个字，只写【景别】和【人物及其核心动作】（如：中景,茹蜷缩抱膝），严禁在Panel中重复描述环境、光影和角色服装！这些全部放在“全局锁定”中。"""
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            response = self.llm_client.think(messages=messages)
+            return response.strip() if response else ""
+        except Exception as e:
+            logger.error(f"生成九宫格提示词失败: {str(e)}")
+            return ""
+
+    def _collect_reference_images(
+        self,
+        image_output_dir: Path,
+        scene_group_no: int,
+        script_id: str,
+    ) -> tuple:
+        """
+        收集参考图片（场景背景图 + 角色四视图）
+        使用base64编码将图片内容直接嵌入，避免file URL和HTTP URL的兼容性问题
+
+        返回:
+        - (background_images, character_images) 两个列表，元素为base64 data URL字符串
+        """
+        # 查找场景背景图（以场景组号开头以bgbg结尾的图片）
+        background_images = []
+        for file in image_output_dir.glob(f"{scene_group_no}_*bgbg*"):
+            if file.is_file():
+                data_url = self._path_to_base64_url(file)
+                if data_url:
+                    background_images.append(data_url)
+                    logger.info(f"找到场景背景图: {file.name} (base64编码)")
+
+        # 查找所有角色四视图（文件名中包含"three_view"的图片）
+        character_images = []
+        for file in image_output_dir.glob("*three_view*"):
+            if file.is_file():
+                data_url = self._path_to_base64_url(file)
+                if data_url:
+                    character_images.append(data_url)
+                    logger.info(f"找到角色四视图: {file.name} (base64编码)")
+
+        return background_images, character_images
+
+    def _path_to_base64_url(self, file_path: Path) -> str:
+        """将本地文件转换为base64 data URL，直接嵌入图片内容"""
+        import base64
+        import mimetypes
+
+        try:
+            # 读取文件内容
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+
+            # 获取MIME类型
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            if not mime_type:
+                mime_type = "image/png"
+
+            # 编码为base64
+            b64_str = base64.b64encode(file_content).decode("utf-8")
+
+            # 返回data URL格式
+            return f"data:{mime_type};base64,{b64_str}"
+        except Exception as e:
+            logger.error(f"读取或编码图片失败: {file_path}, 错误: {e}")
+            return ""
+
+    def _generate_grid_image_with_api(
+        self,
+        grid_prompt: str,
+        background_images: list,
+        character_images: list,
+        shot_no: int,
+        image_output_dir: Path,
+    ) -> str:
+        """使用ImageGeneration.call API生成九宫格图片并保存到本地"""
+        try:
+            from dashscope.aigc.image_generation import ImageGeneration
+            from dashscope.api_entities.dashscope_response import Message
+
+            # 设置 DashScope API 基础 URL
+            dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+
+            # 构建消息内容
+            content = [{"text": grid_prompt}]
+
+            # 添加参考图片
+            for img in background_images:
+                content.append({"image": img})
+            for img in character_images:
+                content.append({"image": img})
+
+            message = Message(role="user", content=content)
+
+            logger.info(f"调用ImageGeneration API生成九宫格图片，参考图片数量: {len(background_images) + len(character_images)}")
+
+            # 调用API生成图片
+            rsp = ImageGeneration.call(
+                model="wan2.7-image-pro",
+                api_key=self.api_key,
+                messages=[message],
+                enable_sequential=True,
+                n=1,  # 只生成一张九宫格图片
+                size="2K",
+            )
+
+            # 保存生成的图片
+            if rsp.status_code == 200:
+                for i, choice in enumerate(rsp.output.choices):
+                    for j, content_item in enumerate(choice["message"]["content"]):
+                        if content_item.get("type") == "image":
+                            image_url = content_item["image"]
+                            # 下载并保存图片
+                            return self._download_and_save_grid_image(
+                                image_url, shot_no, image_output_dir
+                            )
+
+                logger.error(f"响应中未找到图片URL: {rsp}")
+                return ""
+            else:
+                error_code = getattr(rsp, 'code', 'UNKNOWN')
+                error_message = getattr(rsp, 'message', 'Unknown error')
+                logger.error(f"九宫格图片生成失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
+                return ""
+
+        except Exception as e:
+            logger.error(f"调用ImageGeneration API失败: {str(e)}")
+            return ""
+
+    def _download_and_save_grid_image(
+        self, image_url: str, shot_no: int, image_output_dir: Path
+    ) -> str:
+        """下载九宫格图片并保存到本地"""
+        try:
+            import urllib.request
+
+            # 删除该分镜的旧九宫格图片（避免文件堆积）
+            old_image_pattern = f"{shot_no}_*_jgg.png"
+            for old_image in image_output_dir.glob(old_image_pattern):
+                try:
+                    old_image.unlink()
+                    logger.info(f"已删除旧的九宫格图片: {old_image}")
+                except Exception as e:
+                    logger.warning(f"删除旧图片失败: {old_image}, 错误: {e}")
+
+            # 生成文件名：分镜号_时间戳_jgg
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_name = f"{shot_no}_{timestamp}_jgg.png"
+            file_path = image_output_dir / file_name
+
+            # 下载并保存图片
+            urllib.request.urlretrieve(image_url, str(file_path))
+            logger.info(f"九宫格图片已保存到: {file_path}")
+            return str(file_path)
+        except Exception as e:
+            logger.error(f"下载或保存九宫格图片失败: {e}")
             return ""
 
 

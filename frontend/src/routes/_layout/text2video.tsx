@@ -79,10 +79,10 @@ function Text2VideoLayout() {
   return (
     <div className="flex h-full">
       {/* 子侧边栏 - 显示剧本列表 */}
-      <div className="w-32 border-r bg-muted/10 flex flex-col">
+      <div className="w-32 border-r bg-[#e8ebe6]/50 dark:bg-[#1a1b18]/50 flex flex-col">
         <div className="p-4 border-b">
-          <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Video className="h-4 w-4 text-purple-500" />
+          <h2 className="text-caption font-semibold flex items-center gap-2">
+            <Video className="h-4 w-4 text-primary" />
             剧本列表
           </h2>
         </div>
@@ -99,10 +99,10 @@ function Text2VideoLayout() {
                   to="/text2video/$scriptId"
                   params={{ scriptId: script.id }}
                   className={cn(
-                    "flex items-center gap-2 p-3 rounded-lg text-sm mb-1",
+                    "flex items-center gap-2 p-3 rounded-[10px] text-caption mb-1 wise-nav-hover",
                     scriptId === script.id
-                      ? "bg-purple-500/10 text-purple-700 dark:text-purple-300"
-                      : "hover:bg-muted/50 text-muted-foreground hover:text-foreground"
+                      ? "bg-[#9fe870]/20 text-[#163300] dark:text-white"
+                      : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   <FileText className="h-4 w-4 flex-shrink-0" />
@@ -112,7 +112,7 @@ function Text2VideoLayout() {
                 </Link>
               ))
             ) : (
-              <div className="p-3 text-sm text-muted-foreground">
+              <div className="p-3 text-caption text-muted-foreground">
                 暂无剧本
               </div>
             )}

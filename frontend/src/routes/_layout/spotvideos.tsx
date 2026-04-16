@@ -232,11 +232,11 @@
         {/* 页面标题 */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-              <Flame className="h-6 w-6 text-orange-500" />
+            <h1 className="heading-card mb-2 flex items-center gap-2">
+              <Flame className="h-6 w-6 text-[#ffc091]" />
               热点视频搜索
             </h1>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-body-semibold">
               搜索B站热点视频并进行AI分析
             </p>
           </div>

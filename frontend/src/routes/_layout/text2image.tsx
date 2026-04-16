@@ -289,12 +289,12 @@ function Text2Image() {
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Image className="h-6 w-6 text-purple-500" />
+          <h1 className="heading-card mb-2 flex items-center gap-2">
+            <Image className="h-6 w-6 text-primary" />
             文生图
           </h1>
-          <p className="text-muted-foreground">
-            输入你想要生成的图片吧！
+          <p className="text-muted-foreground text-body-semibold">
+            输入你想要生成的图片吧!
           </p>
         </div>
       </div>
@@ -537,12 +537,12 @@ function Text2Image() {
       {/* 空状态 */}
       {!showPromptArea && (
         <div className="flex flex-col items-center justify-center text-center py-12">
-          <div className="rounded-full bg-muted p-4 mb-4">
-            <Image className="h-8 w-8 text-muted-foreground" />
+          <div className="rounded-full bg-[#e2f6d5] dark:bg-[rgba(159,232,112,0.2)] p-4 mb-4">
+            <Image className="h-8 w-8 text-primary" />
           </div>
-          <h3 className="text-lg font-semibold">开始创作图片</h3>
-          <p className="text-muted-foreground">
-            输入图片描述，AI将为你生成专业的提示词并创作图片
+          <h3 className="heading-feature mb-2">开始创作图片</h3>
+          <p className="text-muted-foreground text-body-semibold">
+            输入图片描述,AI将为你生成专业的提示词并创作图片
           </p>
         </div>
       )}

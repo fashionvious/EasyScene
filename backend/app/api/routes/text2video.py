@@ -64,6 +64,18 @@ class GenerateBackgroundRequest(BaseModel):
     shot_scripts: List[dict]
 
 
+class UpdateSingleShotRequest(BaseModel):
+    """更新单个分镜头脚本请求"""
+    total_script: str = Field(..., min_length=1)
+
+
+class GenerateGridImageRequest(BaseModel):
+    """生成九宫格图片请求"""
+    shot_no: int
+    shot_script_text: str
+    scene_group_no: int  # 场景组号，用于匹配场景背景图
+
+
 # --- 响应模型 ---
 
 class CreateScriptResponse(BaseModel):
@@ -106,6 +118,7 @@ class ShotScriptResponse(BaseModel):
     scene_group: int = 1  # 场景组号
     scene_name: str = "默认场景"  # 场景名称
     shot_group: int = 1  # 分镜头组号
+    grid_image_path: Optional[str] = None  # 九宫格图片路径
 
 
 class ScriptStatusResponse(BaseModel):
@@ -118,6 +131,14 @@ class ScriptStatusResponse(BaseModel):
     shot_scripts: List[ShotScriptResponse]
     is_generating_characters: bool
     is_generating_shots: bool
+
+
+class UpdateSingleShotResponse(BaseModel):
+    """更新单个分镜头脚本响应"""
+    id: str
+    shot_no: int
+    total_script: str
+    message: str
 
 
 class UpdateShotsResponse(BaseModel):
@@ -133,6 +154,15 @@ class GenerateBackgroundResponse(BaseModel):
     scene_group: int
     scene_name: str
     background_image_path: str
+    message: str
+
+
+class GenerateGridImageResponse(BaseModel):
+    """生成九宫格图片响应"""
+    success: bool
+    script_id: str
+    shot_no: int
+    grid_image_path: str
     message: str
 
 
@@ -358,6 +388,7 @@ async def api_get_script_status(
                     scene_group=s.scene_group,
                     scene_name=s.scene_name,
                     shot_group=s.shot_group,
+                    grid_image_path=s.grid_image_path,
                 )
                 for s in shot_scripts
             ],
@@ -481,6 +512,76 @@ async def api_update_single_character(
         raise HTTPException(status_code=500, detail=f"更新角色信息失败: {str(e)}")
     finally:
         await redis_manager.close()
+
+
+@router.patch("/text2video/shot/{shot_id}", response_model=UpdateSingleShotResponse)
+async def api_update_single_shot(
+    shot_id: str,
+    request: UpdateSingleShotRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    更新单个分镜头脚本的total_script字段
+
+    参数:
+    - shot_id: 分镜头脚本ID
+    - total_script: 更新后的分镜头脚本内容
+
+    返回:
+    - id: 分镜头脚本ID
+    - shot_no: 分镜号
+    - total_script: 更新后的分镜头脚本内容
+    - message: 提示信息
+    """
+    try:
+        # 查询分镜头脚本
+        shot_uuid = uuid.UUID(shot_id)
+        shot = session.get(ShotScript, shot_uuid)
+
+        if not shot:
+            raise HTTPException(status_code=404, detail="分镜头脚本不存在")
+
+        # 检查是否已删除
+        if shot.is_deleted == 1:
+            raise HTTPException(status_code=404, detail="分镜头脚本不存在")
+
+        # 通过分镜头关联查询剧本，进行权限校验
+        script = session.get(Script, shot.script_id)
+
+        if not script:
+            raise HTTPException(status_code=404, detail="关联的剧本不存在")
+
+        # 权限校验：确保当前用户是该剧本的创建者
+        if script.creator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权修改此分镜头脚本")
+
+        # 更新分镜头脚本的total_script字段
+        shot.total_script = request.total_script
+        shot.update_time = datetime.utcnow()
+        session.add(shot)
+
+        # 更新剧本的最后编辑时间和编辑者
+        script.last_editor_id = current_user.id
+        script.update_time = datetime.utcnow()
+        session.add(script)
+
+        session.commit()
+        session.refresh(shot)
+
+        return UpdateSingleShotResponse(
+            id=str(shot.id),
+            shot_no=shot.shot_no,
+            total_script=shot.total_script,
+            message="分镜头脚本更新成功",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的分镜头脚本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"更新分镜头脚本失败: {str(e)}")
 
 
 @router.post("/text2video/confirm-character-three-view", response_model=ConfirmThreeViewResponse)
@@ -636,6 +737,9 @@ async def api_update_shots(
                 script_id=script_uuid,
                 shot_no=shot_data.get("shot_no", idx + 1),
                 total_script=shot_data.get("total_script", ""),
+                scene_group=shot_data.get("scene_group", 1),
+                scene_name=shot_data.get("scene_name", "默认场景"),
+                shot_group=shot_data.get("shot_group", 1),
                 version=1,
             )
             session.add(shot)
@@ -752,6 +856,77 @@ async def api_generate_scene_background(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成背景图失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
+@router.post("/text2video/generate-grid-image/{script_id}", response_model=GenerateGridImageResponse)
+async def api_generate_grid_image(
+    script_id: str,
+    request: GenerateGridImageRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    为指定分镜生成九宫格图片
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shot_script_text: 分镜脚本内容
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - grid_image_path: 九宫格图片路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询剧本
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        # 检查权限
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成九宫格图片")
+        
+        # 触发Celery任务生成九宫格图片
+        from app.agent.generateVideo.tasks import generate_grid_image_task
+        
+        task = generate_grid_image_task.delay(
+            script_id=script_id,
+            shot_no=request.shot_no,
+            shot_script_text=request.shot_script_text,
+            scene_group_no=request.scene_group_no,
+            user_id=str(current_user.id),
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateGridImageResponse(
+            success=True,
+            script_id=script_id,
+            shot_no=request.shot_no,
+            grid_image_path="",  # 异步生成，路径稍后通过轮询获取
+            message=f"分镜{request.shot_no}九宫格图片生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成九宫格图片失败: {str(e)}")
     finally:
         await redis_manager.close()
 
