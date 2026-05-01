@@ -56,6 +56,14 @@ env_path = Path(__file__).resolve().parents[3] / ".env"
 load_dotenv(env_path)
 
 from app.agent.generatePic.llm_client import HelloAgentsLLM
+from app.agent.generateVideo.seed_manager import (
+    generate_global_seed,
+    derive_character_seed,
+    derive_scene_seed,
+    derive_grid_seed,
+    derive_first_frame_seed,
+    derive_video_seed,
+)
 
 # 日志配置
 logger = logging.getLogger(__name__)
@@ -105,6 +113,9 @@ class VideoGenerationState(TypedDict):
     scene_backgrounds: List[Dict[str, Any]]  # [{"scene_group": 1, "scene_name": "xxx", "background_image_path": "xxx"}]
     backgrounds_generated: bool
     
+    # 全局统一seed：用于人物/场景一致性，避免漂移
+    global_seed: int
+    
     # 错误信息
     error_message: Optional[str]
     
@@ -136,7 +147,8 @@ class CharacterExtractionAgent:
 {state['script_content']}
 
 请提取出**所有**主要人物的姓名、角色基础描述（如长相、性格等这些基本固定不变的，而不是角色的状态）。
-如果剧本文档中信息不足，请根据剧情合理推测设计，但不要脱离内容。
+剧情中仅出现一次的人物不需要提取。
+如果剧本文档中对主要人物的基础描述信息不足，请根据剧情合理推测设计，但不要脱离内容。
 
 请**严格**按照以下 JSON 列表格式返回结果，不要包含 Markdown 标记（如 ```json），只返回纯 JSON 字符串。
 请确保提取出剧本中出现的每一个主要角色，不要遗漏。
@@ -389,7 +401,10 @@ class CharacterThreeViewAgent:
                     continue
 
                 # Step 2: 使用提示词生成四视图图片 (修改了调用方式)
-                image_path = self._generate_three_view_image(three_view_prompt, role_name, image_output_dir)
+                # 从state中获取global_seed，派生角色确定性seed
+                global_seed = state.get("global_seed", 0)
+                character_seed = derive_character_seed(global_seed, role_name)
+                image_path = self._generate_three_view_image(three_view_prompt, role_name, image_output_dir, character_seed)
 
                 # 更新或添加四视图信息
                 if existing_view:
@@ -420,9 +435,9 @@ class CharacterThreeViewAgent:
 
         return state
     
-    def c(self, role_name: str, role_desc: str) -> str:
+    def _generate_three_view_prompt(self, role_name: str, role_desc: str) -> str:
         """使用qwen3.5-plus生成四视图提示词"""
-        prompt = f"""你是一个熟悉各类 AI 绘画模型底层的顶级提示词工程师。你的任务是根据用户的简单描述，生成用于AI视频生成的"高质量角色四视图"中文提示词。
+        prompt = f"""你是一个熟悉各类 AI 图像生成模型底层的顶级提示词工程师。你的任务是根据用户的简单描述，生成用于AI视频生成的"高质量写实风格角色四视图"中文提示词。如用户无明确要求，生成的人物四视图必须是现实世界的写实风格，照片级逼真，不要生成绘画或动漫风格。
 
 Rule 1: 排版与防出画规范 (CRITICAL)
 1. 画布比例默认使用 16:9 。
@@ -452,7 +467,7 @@ Output Format
             logger.error(f"生成四视图提示词失败: {str(e)}")
             return ""
     
-    def _generate_three_view_image(self, prompt: str, role_name: str, image_output_dir: Path) -> str:
+    def _generate_three_view_image(self, prompt: str, role_name: str, image_output_dir: Path, seed: int = None) -> str:
         """使用 qwen-image-2.0-pro 模型生成四视图图片并保存到本地"""
         try:
             # 设置 DashScope API 基础 URL（北京地域）
@@ -468,8 +483,8 @@ Output Format
                 }
             ]
             
-            # 调用 qwen-image-2.0-pro 模型生成图片
-            response = MultiModalConversation.call(
+            # 构建调用参数
+            call_kwargs = dict(
                 api_key=self.api_key,
                 model="qwen-image-2.0-pro",
                 messages=messages,
@@ -480,6 +495,14 @@ Output Format
                 negative_prompt="低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
                 size='2688*1536'
             )
+            
+            # 传递seed参数实现角色一致性
+            if seed is not None:
+                call_kwargs["seed"] = seed
+                logger.info(f"角色 '{role_name}' 四视图生成使用seed: {seed}")
+            
+            # 调用 qwen-image-2.0-pro 模型生成图片
+            response = MultiModalConversation.call(**call_kwargs)
             
             # 检查响应状态
             if response.status_code == 200:
@@ -555,7 +578,7 @@ Output Format
 
 
 class GridImageAgent:
-    """九宫格图片生成Agent节点"""
+    """六宫格图片生成Agent节点"""
     
     def __init__(self, llm_client: HelloAgentsLLM, script_id: str = None):
         self.llm_client = llm_client
@@ -581,33 +604,35 @@ class GridImageAgent:
         shot_script_text: str,
         scene_group_no: int,
         script_id: str,
+        global_seed: int = 0,
     ) -> Dict[str, Any]:
         """
-        为指定分镜生成九宫格图片
+        为指定分镜生成六宫格图片
 
         参数:
         - shot_no: 分镜号
         - shot_script_text: 分镜脚本内容
         - scene_group_no: 场景组号，用于匹配场景背景图
         - script_id: 剧本ID
+        - global_seed: 全局统一seed，用于派生六宫格确定性seed
 
         返回:
         - {"shot_no": shot_no, "grid_image_path": "xxx"} 或 {"shot_no": shot_no, "error": "xxx"}
         """
-        logger.info(f"开始为分镜{shot_no}生成九宫格图片，场景组: {scene_group_no}")
+        logger.info(f"开始为分镜{shot_no}生成六宫格图片，场景组: {scene_group_no}")
 
         # 获取图片输出目录
         image_output_dir = self._get_image_output_dir(script_id)
         logger.info(f"图片输出目录: {image_output_dir}")
 
         try:
-            # Step 1: 生成九宫格图片提示词
+            # Step 1: 生成六宫格图片提示词
             grid_prompt = self._generate_grid_prompt(shot_script_text)
             if not grid_prompt:
-                logger.warning(f"分镜{shot_no}的九宫格提示词生成失败")
-                return {"shot_no": shot_no, "grid_image_path": "", "error": "九宫格提示词生成失败"}
+                logger.warning(f"分镜{shot_no}的六宫格提示词生成失败")
+                return {"shot_no": shot_no, "grid_image_path": "", "error": "六宫格提示词生成失败"}
 
-            logger.info(f"生成的九宫格提示词: {grid_prompt}")
+            logger.info(f"生成的六宫格提示词: {grid_prompt}")
 
             # Step 2: 收集参考图片
             background_images, character_images = self._collect_reference_images(
@@ -615,33 +640,35 @@ class GridImageAgent:
             )
             logger.info(f"场景背景图数量: {len(background_images)}, 角色四视图数量: {len(character_images)}")
 
-            # Step 3: 使用ImageGeneration.call生成九宫格图片
+            # Step 3: 使用ImageGeneration.call生成六宫格图片
+            # 派生六宫格确定性seed
+            grid_seed = derive_grid_seed(global_seed, shot_no)
             image_path = self._generate_grid_image_with_api(
-                "最重要的一点，请务必遵循：将下列9个panel根据描述分别生成一张图片，然后按顺序拼到一起构成一张分镜头九宫格图片。"+grid_prompt, background_images, character_images,
-                shot_no, image_output_dir
+                "最重要的一点，请务必遵循：将下列6个panel根据描述分别生成一张图片，然后按顺序拼到一起构成一张分镜头故事板。严格限制为2列3行的布局（左边3个，右边3个），整体画幅为16:9，每个单格为8:3。严禁因为画幅是宽屏就自动生成第3列，必须且只能生成6个panel。"+grid_prompt, background_images, character_images,
+                shot_no, image_output_dir, grid_seed
             )
 
             if image_path:
-                logger.info(f"分镜{shot_no}的九宫格图片生成完成，图片路径: {image_path}")
+                logger.info(f"分镜{shot_no}的六宫格图片生成完成，图片路径: {image_path}")
                 return {"shot_no": shot_no, "grid_image_path": image_path}
             else:
-                logger.warning(f"分镜{shot_no}的九宫格图片生成失败")
-                return {"shot_no": shot_no, "grid_image_path": "", "error": "九宫格图片生成失败"}
+                logger.warning(f"分镜{shot_no}的六宫格图片生成失败")
+                return {"shot_no": shot_no, "grid_image_path": "", "error": "六宫格图片生成失败"}
 
         except Exception as e:
-            logger.error(f"九宫格图片生成失败: {str(e)}")
+            logger.error(f"六宫格图片生成失败: {str(e)}")
             return {"shot_no": shot_no, "grid_image_path": "", "error": str(e)}
 
     def _generate_grid_prompt(self, shot_script_text: str) -> str:
-        """使用LLM生成九宫格图片提示词"""
-        prompt = f"""你是一位拥有顶级工业标准的影视级分镜导演。你的任务是根据我提供的【分镜头脚本】，批量生成高质量的、可直接用于AI视频/图像生成的中文提示词。
+        """使用LLM生成六宫格图片提示词"""
+        prompt = f"""你是一位拥有顶级工业标准的影视级分镜导演。你的任务是根据我提供的【分镜头脚本】和【角色四视图参考图】，批量生成高质量的、可直接用于AI视频/图像生成的中文提示词。
 
 【核心规则】
-1. 布局与画幅：强制输出 3x3 的九宫格故事板布局，单格严格遵循 16:9 比例。必须在画面中画出清晰的网格线，将画面物理分割为9个独立的画格。
-2. 角色与环境一致性：提取四视图核心特征，在9个关键动作帧中严格锁定出场角色的面部、发型、身材等固定特征（图片中有标记角色名，且上传的图片文件中也包含角色名，你可以用于区分）；提取背景图片特征，强调光源方向一致性与背景空间逻辑（符合180度轴线原则）。
-3. 动作连贯推演：将每个脚本的动作合理拆解为 Panel 1 到 Panel 9 的连贯互动，必须逐个Panel详细描述，严禁将多个Panel合并描述。
-4. 视觉风格：优先分析脚本适合的风格，信息不足时默认使用：影视级光影、2K分辨率、高精度渲染（C4D Octane Render / 高质量写实风格）。
-5. 极致锁定：100% 遵循三视图的面部、发型、体貌特征，绝不乱改角色外观，保证九宫格9个镜头角色完全一致。强化影视级光影、质感与艺术表现力。
+1. 布局与画幅：强制输出 2列3行 的六宫格故事板布局（左边3个画格，右边3个画格）。整体画幅严格为 16:9，每个单格画幅严格为 8:3。6个画格必须完全等大且排列整齐。严禁因为整体是宽屏就自作主张生成第3列，必须且只能有2列！必须在画面中画出清晰的网格线，将画面物理分割为6个独立的画格。
+2. 参考图死锁（最重要！）：用户会提供某角色的四视图参考图。你必须明白：每张四视图是【一个角色的不同角度】，而不是4个不同的人！在生成六宫格时，6个Panel中的角色必须且只能严格按照角色四视图中的形象生成（每张角色四视图右下角都有标注角色姓名）。严禁参考其他人物，严禁自由发挥改变角色外观！
+3. 角色DNA提取：仔细观察提供的四视图，提炼出该角色最不易走样的核心防变形锚点（即角色DNA），如：特定发色与发型、瞳色、标志性面部特征、核心服饰款式与颜色。这些锚点必须在“全局锁定”中明确写出，用于压制AI的随机性。
+4. 动作连贯推演：将每个脚本的动作合理拆解为 Panel 1 到 Panel 6 的连贯互动，必须逐个Panel详细描述，严禁将多个Panel合并描述。
+5. 视觉风格：优先分析脚本适合的风格，信息不足时默认使用：影视级光影、2K分辨率、高精度渲染（C4D Octane Render / 高质量写实风格）。
 
 【输入脚本】
 {shot_script_text}
@@ -651,27 +678,25 @@ class GridImageAgent:
 2. 每条提示词约 150-200 字，必须是一段连贯的、可直接喂给AI的中文提示词。
 3. 提示词末尾必须加上参数 --ar 16:9。
 4. 严禁输出任何解释性废话，只按以下格式模板输出：
-comic storyboard, 3x3 grid layout, 9 distinct panels with white borders, 单格16:9.
+comic storyboard, a 16:9 canvas divided into 2 columns and 3 rows, exactly 6 equal-sized panels, each panel 8:3 aspect ratio, left side 3 panels, right side 3 panels, strictly aligned, white borders, no third column. 
+CRITICAL RULE: strictly consistent character design across all 6 panels, same exact character from reference images in every panel, no character drift, strictly follow reference images.
 Panel 1 (左上): [景别]+[核心动作]
-Panel 2 (中上): [景别]+[核心动作]
-Panel 3 (右上): [景别]+[核心动作]
-Panel 4 (左中): [景别]+[核心动作]
-Panel 5 (正中): [景别]+[核心动作]
-Panel 6 (右中): [景别]+[核心动作]
-Panel 7 (左下): [景别]+[核心动作]
-Panel 8 (中下): [景别]+[核心动作]
-Panel 9 (右下): [景别]+[核心动作]
-全局锁定: [角色外貌特征], [环境与背景], [光源与风格] --ar 16:9
+Panel 2 (左中): [景别]+[核心动作]
+Panel 3 (左下): [景别]+[核心动作]
+Panel 4 (右上): [景别]+[核心动作]
+Panel 5 (右中): [景别]+[核心动作]
+Panel 6 (右下): [景别]+[核心动作]
+全局锁定: [角色DNA: 极其具体的面部/发型/服饰锚点], [环境与背景], [光源与风格] --ar 16:9
 
 【极简原则】
-每个Panel的描述必须极度精简，不超过20个字，只写【景别】和【人物及其核心动作】（如：中景,茹蜷缩抱膝），严禁在Panel中重复描述环境、光影和角色服装！这些全部放在“全局锁定”中。"""
+每个Panel的描述不超过30个字，只写【景别】和【人物(人物一定要使用角色名称不要使用代词，如他、她、他们等，ai无法识别)及其核心动作】（如：中景,茹蜷缩抱膝），严禁在Panel中重复描述角色特征！角色特征全部放在“全局锁定”的“角色DNA”中。"""
         messages = [{"role": "user", "content": prompt}]
 
         try:
             response = self.llm_client.think(messages=messages)
             return response.strip() if response else ""
         except Exception as e:
-            logger.error(f"生成九宫格提示词失败: {str(e)}")
+            logger.error(f"生成六宫格提示词失败: {str(e)}")
             return ""
 
     def _collect_reference_images(
@@ -738,8 +763,9 @@ Panel 9 (右下): [景别]+[核心动作]
         character_images: list,
         shot_no: int,
         image_output_dir: Path,
+        seed: int = None,
     ) -> str:
-        """使用ImageGeneration.call API生成九宫格图片并保存到本地"""
+        """使用ImageGeneration.call API生成六宫格图片并保存到本地"""
         try:
             from dashscope.aigc.image_generation import ImageGeneration
             from dashscope.api_entities.dashscope_response import Message
@@ -758,17 +784,25 @@ Panel 9 (右下): [景别]+[核心动作]
 
             message = Message(role="user", content=content)
 
-            logger.info(f"调用ImageGeneration API生成九宫格图片，参考图片数量: {len(background_images) + len(character_images)}")
+            logger.info(f"调用ImageGeneration API生成六宫格图片，参考图片数量: {len(background_images) + len(character_images)}")
 
-            # 调用API生成图片
-            rsp = ImageGeneration.call(
+            # 构建调用参数
+            call_kwargs = dict(
                 model="wan2.7-image-pro",
                 api_key=self.api_key,
                 messages=[message],
                 enable_sequential=True,
-                n=1,  # 只生成一张九宫格图片
-                size="2K",
+                n=1,  # 只生成一张六宫格图片
+                size='2688*1536',
             )
+            
+            # 传递seed参数实现六宫格图一致性
+            if seed is not None:
+                call_kwargs["seed"] = seed
+                logger.info(f"分镜 {shot_no} 六宫格生成使用seed: {seed}")
+
+            # 调用API生成图片
+            rsp = ImageGeneration.call(**call_kwargs)
 
             # 保存生成的图片
             if rsp.status_code == 200:
@@ -786,7 +820,7 @@ Panel 9 (右下): [景别]+[核心动作]
             else:
                 error_code = getattr(rsp, 'code', 'UNKNOWN')
                 error_message = getattr(rsp, 'message', 'Unknown error')
-                logger.error(f"九宫格图片生成失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
+                logger.error(f"六宫格图片生成失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
                 return ""
 
         except Exception as e:
@@ -796,16 +830,16 @@ Panel 9 (右下): [景别]+[核心动作]
     def _download_and_save_grid_image(
         self, image_url: str, shot_no: int, image_output_dir: Path
     ) -> str:
-        """下载九宫格图片并保存到本地"""
+        """下载六宫格图片并保存到本地"""
         try:
             import urllib.request
 
-            # 删除该分镜的旧九宫格图片（避免文件堆积）
+            # 删除该分镜的旧六宫格图片（避免文件堆积）
             old_image_pattern = f"{shot_no}_*_jgg.png"
             for old_image in image_output_dir.glob(old_image_pattern):
                 try:
                     old_image.unlink()
-                    logger.info(f"已删除旧的九宫格图片: {old_image}")
+                    logger.info(f"已删除旧的六宫格图片: {old_image}")
                 except Exception as e:
                     logger.warning(f"删除旧图片失败: {old_image}, 错误: {e}")
 
@@ -816,10 +850,675 @@ Panel 9 (右下): [景别]+[核心动作]
 
             # 下载并保存图片
             urllib.request.urlretrieve(image_url, str(file_path))
-            logger.info(f"九宫格图片已保存到: {file_path}")
+            logger.info(f"六宫格图片已保存到: {file_path}")
             return str(file_path)
         except Exception as e:
-            logger.error(f"下载或保存九宫格图片失败: {e}")
+            logger.error(f"下载或保存六宫格图片失败: {e}")
+            return ""
+
+
+class FirstFrameAgent:
+    """首帧图生成Agent节点 - 借鉴GridImageAgent，单独生成六宫格中的Panel 1"""
+
+    def __init__(self, llm_client: HelloAgentsLLM, script_id: str = None):
+        self.llm_client = llm_client
+        self.script_id = script_id
+        # 获取API Key
+        self.api_key = os.getenv("DASHSCOPE_API_KEY")
+        if not self.api_key:
+            raise ValueError("请在.env文件中设置DASHSCOPE_API_KEY")
+
+    def _get_image_output_dir(self, script_id: str) -> Path:
+        """根据 script_id 获取图片输出目录"""
+        base_dir = Path(__file__).resolve().parents[3]
+        if script_id:
+            image_output_dir = base_dir / script_id / "generated_images"
+        else:
+            image_output_dir = base_dir / "generated_images"
+        image_output_dir.mkdir(parents=True, exist_ok=True)
+        return image_output_dir
+
+    def generate_first_frame_image(
+        self,
+        shot_no: int,
+        shot_script_text: str,
+        scene_group_no: int,
+        script_id: str,
+        script_name: str,
+        global_seed: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        为指定分镜生成首帧图（即六宫格中的Panel 1）
+
+        参数:
+        - shot_no: 分镜号
+        - shot_script_text: 分镜脚本内容
+        - scene_group_no: 场景组号，用于匹配场景背景图
+        - script_id: 剧本ID
+        - script_name: 剧本名称
+        - global_seed: 全局统一seed，用于派生首帧图确定性seed
+
+        返回:
+        - {"shot_no": shot_no, "first_frame_image_path": "xxx"} 或 {"shot_no": shot_no, "error": "xxx"}
+        """
+        logger.info(f"开始为分镜{shot_no}生成首帧图，场景组: {scene_group_no}")
+
+        # 获取图片输出目录
+        image_output_dir = self._get_image_output_dir(script_id)
+        logger.info(f"图片输出目录: {image_output_dir}")
+
+        try:
+            # Step 1: 生成首帧图提示词
+            first_frame_prompt = self._generate_first_frame_prompt(shot_script_text)
+            if not first_frame_prompt:
+                logger.warning(f"分镜{shot_no}的首帧图提示词生成失败")
+                return {"shot_no": shot_no, "first_frame_image_path": "", "error": "首帧图提示词生成失败"}
+
+            logger.info(f"生成的首帧图提示词: {first_frame_prompt}")
+
+            # Step 2: 收集参考图片
+            background_images, character_images = self._collect_reference_images(
+                image_output_dir, scene_group_no, script_id
+            )
+            logger.info(f"场景背景图数量: {len(background_images)}, 角色四视图数量: {len(character_images)}")
+
+            # Step 3: 使用ImageGeneration.call生成首帧图
+            # 派生首帧图确定性seed
+            first_frame_seed = derive_first_frame_seed(global_seed, shot_no)
+            image_path = self._generate_first_frame_image_with_api(
+                first_frame_prompt, background_images, character_images,
+                shot_no, script_name, image_output_dir, first_frame_seed
+            )
+
+            if image_path:
+                logger.info(f"分镜{shot_no}的首帧图生成完成，图片路径: {image_path}")
+                return {"shot_no": shot_no, "first_frame_image_path": image_path}
+            else:
+                logger.warning(f"分镜{shot_no}的首帧图生成失败")
+                return {"shot_no": shot_no, "first_frame_image_path": "", "error": "首帧图生成失败"}
+
+        except Exception as e:
+            logger.error(f"首帧图生成失败: {str(e)}")
+            return {"shot_no": shot_no, "first_frame_image_path": "", "error": str(e)}
+
+    def _generate_first_frame_prompt(self, shot_script_text: str) -> str:
+        """使用LLM生成首帧图提示词（只生成Panel 1，即六宫格中的第一个画面）"""
+        prompt = f"""你是一位拥有顶级工业标准的影视级分镜导演。你的任务是根据我提供的【分镜头脚本】和【角色四视图参考图】，生成高质量的首帧图提示词。首帧图就是分镜头故事板中的第一个画面（Panel 1），代表该分镜的起始画面。
+
+【核心规则】
+1. 画面规格：单张图片，画幅严格为 16:9，8:3的单格画幅。只生成一个画面，不要生成多宫格故事板。
+2. 参考图死锁（最重要！）：用户会提供某角色的四视图参考图。你必须明白：每张四视图是【一个角色的不同角度】，而不是4个不同的人！首帧图中的角色必须且只能严格按照角色四视图中的形象生成。严禁参考其他人物，严禁自由发挥改变角色外观！
+3. 角色DNA提取：仔细观察提供的四视图，提炼出该角色最不易走样的核心防变形锚点（即角色DNA），如：特定发色与发型、瞳色、标志性面部特征、核心服饰款式与颜色。这些锚点必须在提示词中明确写出，用于压制AI的随机性。
+4. 首帧动作推演：根据分镜头脚本，推演出该分镜起始时刻的画面。首帧应该是动作的起点、场景的初始状态，为后续动作提供视觉锚点。
+5. 视觉风格：优先分析脚本适合的风格，信息不足时默认使用：影视级光影、2K分辨率、高精度渲染（C4D Octane Render / 高质量写实风格）。
+
+【输入脚本】
+{shot_script_text}
+
+【输出要求】
+1. 生成一段约 100-150 字的、连贯的、可直接喂给AI的中文提示词。
+2. 提示词末尾必须加上参数 --ar 16:9。
+3. 严禁输出任何解释性废话，只按以下格式模板输出：
+cinematic first frame, single panel, 16:9 aspect ratio, 
+CRITICAL RULE: strictly consistent character design from reference images, no character drift, strictly follow reference images.
+[景别]+[核心动作与起始状态]
+角色DNA: [极其具体的面部/发型/服饰锚点], [环境与背景], [光源与风格] --ar 16:9
+
+【极简原则】
+画面描述不超过50个字，只写【景别】和【人物及其核心动作/起始状态】，角色特征全部放在"角色DNA"中。"""
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            response = self.llm_client.think(messages=messages)
+            return response.strip() if response else ""
+        except Exception as e:
+            logger.error(f"生成首帧图提示词失败: {str(e)}")
+            return ""
+
+    def _collect_reference_images(
+        self,
+        image_output_dir: Path,
+        scene_group_no: int,
+        script_id: str,
+    ) -> tuple:
+        """
+        收集参考图片（场景背景图 + 角色四视图）
+        使用base64编码将图片内容直接嵌入，避免file URL和HTTP URL的兼容性问题
+
+        返回:
+        - (background_images, character_images) 两个列表，元素为base64 data URL字符串
+        """
+        # 查找场景背景图（以场景组号开头以bgbg结尾的图片）
+        background_images = []
+        for file in image_output_dir.glob(f"{scene_group_no}_*bgbg*"):
+            if file.is_file():
+                data_url = self._path_to_base64_url(file)
+                if data_url:
+                    background_images.append(data_url)
+                    logger.info(f"找到场景背景图: {file.name} (base64编码)")
+
+        # 查找所有角色四视图（文件名中包含"three_view"的图片）
+        character_images = []
+        for file in image_output_dir.glob("*three_view*"):
+            if file.is_file():
+                data_url = self._path_to_base64_url(file)
+                if data_url:
+                    character_images.append(data_url)
+                    logger.info(f"找到角色四视图: {file.name} (base64编码)")
+
+        return background_images, character_images
+
+    def _path_to_base64_url(self, file_path: Path) -> str:
+        """将本地文件转换为base64 data URL，直接嵌入图片内容"""
+        import base64
+        import mimetypes
+
+        try:
+            # 读取文件内容
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+
+            # 获取MIME类型
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            if not mime_type:
+                mime_type = "image/png"
+
+            # 编码为base64
+            b64_str = base64.b64encode(file_content).decode("utf-8")
+
+            # 返回data URL格式
+            return f"data:{mime_type};base64,{b64_str}"
+        except Exception as e:
+            logger.error(f"读取或编码图片失败: {file_path}, 错误: {e}")
+            return ""
+
+    def _generate_first_frame_image_with_api(
+        self,
+        first_frame_prompt: str,
+        background_images: list,
+        character_images: list,
+        shot_no: int,
+        script_name: str,
+        image_output_dir: Path,
+        seed: int = None,
+    ) -> str:
+        """使用ImageGeneration.call API生成首帧图并保存到本地"""
+        try:
+            from dashscope.aigc.image_generation import ImageGeneration
+            from dashscope.api_entities.dashscope_response import Message
+
+            # 设置 DashScope API 基础 URL
+            dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+
+            # 构建消息内容
+            content = [{"text": first_frame_prompt}]
+
+            # 添加参考图片
+            for img in background_images:
+                content.append({"image": img})
+            for img in character_images:
+                content.append({"image": img})
+
+            message = Message(role="user", content=content)
+
+            logger.info(f"调用ImageGeneration API生成首帧图，参考图片数量: {len(background_images) + len(character_images)}")
+
+            # 构建调用参数
+            call_kwargs = dict(
+                model="wan2.7-image-pro",
+                api_key=self.api_key,
+                messages=[message],
+                enable_sequential=True,
+                n=1,  # 只生成一张首帧图
+                size='2688*1536',
+            )
+
+            # 传递seed参数实现首帧图一致性
+            if seed is not None:
+                call_kwargs["seed"] = seed
+                logger.info(f"分镜 {shot_no} 首帧图生成使用seed: {seed}")
+
+            # 调用API生成图片
+            rsp = ImageGeneration.call(**call_kwargs)
+
+            # 保存生成的图片
+            if rsp.status_code == 200:
+                for i, choice in enumerate(rsp.output.choices):
+                    for j, content_item in enumerate(choice["message"]["content"]):
+                        if content_item.get("type") == "image":
+                            image_url = content_item["image"]
+                            # 下载并保存图片
+                            return self._download_and_save_first_frame_image(
+                                image_url, shot_no, script_name, image_output_dir
+                            )
+
+                logger.error(f"响应中未找到图片URL: {rsp}")
+                return ""
+            else:
+                error_code = getattr(rsp, 'code', 'UNKNOWN')
+                error_message = getattr(rsp, 'message', 'Unknown error')
+                logger.error(f"首帧图生成失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
+                return ""
+
+        except Exception as e:
+            logger.error(f"调用ImageGeneration API失败: {str(e)}")
+            return ""
+
+    def _download_and_save_first_frame_image(
+        self, image_url: str, shot_no: int, script_name: str, image_output_dir: Path
+    ) -> str:
+        """下载首帧图并保存到本地，文件命名格式：剧本名_分镜号_时间戳_ff"""
+        try:
+            import urllib.request
+
+            # 删除该分镜的旧首帧图（避免文件堆积）
+            old_image_pattern = f"{script_name}_{shot_no}_*_ff.png"
+            for old_image in image_output_dir.glob(old_image_pattern):
+                try:
+                    old_image.unlink()
+                    logger.info(f"已删除旧的首帧图: {old_image}")
+                except Exception as e:
+                    logger.warning(f"删除旧图片失败: {old_image}, 错误: {e}")
+
+            # 生成文件名：剧本名_分镜号_时间戳_ff
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_name = f"{script_name}_{shot_no}_{timestamp}_ff.png"
+            file_path = image_output_dir / file_name
+
+            # 下载并保存图片
+            urllib.request.urlretrieve(image_url, str(file_path))
+            logger.info(f"首帧图已保存到: {file_path}")
+            return str(file_path)
+        except Exception as e:
+            logger.error(f"下载或保存首帧图失败: {e}")
+            return ""
+
+
+class VideoGenerationAgent:
+    """视频生成Agent节点 - 基于六宫格分镜头图片生成视频"""
+
+    def __init__(self, llm_client: HelloAgentsLLM, script_id: str = None):
+        self.llm_client = llm_client
+        self.script_id = script_id
+        # 获取DashScope API Key（用于wan2.7-r2v六宫格视频生成）
+        self.api_key = os.getenv("DASHSCOPE_API_KEY")
+        if not self.api_key:
+            raise ValueError("请在.env文件中设置DASHSCOPE_API_KEY")
+        # 获取火山方舟 API Key（用于seedance首帧图视频生成）
+        self.ark_api_key = os.getenv("ARK_API_KEY")
+
+    def _get_video_output_dir(self, script_id: str) -> Path:
+        """根据 script_id 获取视频输出目录（与四视图路径一致）"""
+        base_dir = Path(__file__).resolve().parents[3]
+        if script_id:
+            video_output_dir = base_dir / script_id / "generated_images"
+        else:
+            video_output_dir = base_dir / "generated_images"
+        video_output_dir.mkdir(parents=True, exist_ok=True)
+        return video_output_dir
+
+    def _path_to_base64_url(self, file_path: Path) -> str:
+        """将本地文件转换为base64 data URL，直接嵌入图片内容"""
+        import base64
+        import mimetypes
+
+        try:
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            if not mime_type:
+                mime_type = "image/png"
+
+            b64_str = base64.b64encode(file_content).decode("utf-8")
+            return f"data:{mime_type};base64,{b64_str}"
+        except Exception as e:
+            logger.error(f"读取或编码图片失败: {file_path}, 错误: {e}")
+            return ""
+
+    def generate_video(
+        self,
+        shot_no: int,
+        shotlist_text: str,
+        script_id: str,
+        script_name: str,
+        global_seed: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        为指定分镜生成视频
+
+        参数:
+        - shot_no: 分镜号
+        - shotlist_text: 分镜头脚本内容
+        - script_id: 剧本ID
+        - script_name: 剧本名称
+        - global_seed: 全局统一seed
+
+        返回:
+        - {"shot_no": shot_no, "video_path": "xxx"} 或 {"shot_no": shot_no, "error": "xxx"}
+        """
+        logger.info(f"开始为分镜{shot_no}生成视频，剧本: {script_name}")
+
+        # 获取视频输出目录
+        video_output_dir = self._get_video_output_dir(script_id)
+        logger.info(f"视频输出目录: {video_output_dir}")
+
+        try:
+            # Step 1: 查找六宫格图片
+            grid_image_path = self._find_grid_image(video_output_dir, shot_no)
+            if not grid_image_path:
+                logger.warning(f"分镜{shot_no}的六宫格图片不存在，无法生成视频")
+                return {"shot_no": shot_no, "video_path": "", "error": "六宫格图片不存在，请先生成六宫格图片"}
+
+            # Step 2: 将六宫格图片转为base64
+            grid_image_base64 = self._path_to_base64_url(grid_image_path)
+            if not grid_image_base64:
+                logger.warning(f"分镜{shot_no}的六宫格图片base64编码失败")
+                return {"shot_no": shot_no, "video_path": "", "error": "六宫格图片base64编码失败"}
+
+            # Step 3: 构建提示词
+            prompt = f"请根据我给你的六宫格分镜头图片，以及分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当"
+
+            # Step 4: 调用DashScope VideoSynthesis API生成视频
+            video_path = self._generate_video_with_api(
+                prompt=prompt,
+                grid_image_base64=grid_image_base64,
+                shot_no=shot_no,
+                script_name=script_name,
+                video_output_dir=video_output_dir,
+            )
+
+            if video_path:
+                logger.info(f"分镜{shot_no}的视频生成完成，视频路径: {video_path}")
+                return {"shot_no": shot_no, "video_path": video_path}
+            else:
+                logger.warning(f"分镜{shot_no}的视频生成失败")
+                return {"shot_no": shot_no, "video_path": "", "error": "视频生成失败"}
+
+        except Exception as e:
+            logger.error(f"视频生成失败: {str(e)}")
+            return {"shot_no": shot_no, "video_path": "", "error": str(e)}
+
+    def _find_grid_image(self, video_output_dir: Path, shot_no: int) -> str:
+        """查找指定分镜的六宫格图片"""
+        # 六宫格图片命名格式：{shot_no}_{timestamp}_jgg.png
+        grid_images = list(video_output_dir.glob(f"{shot_no}_*_jgg.png"))
+        if grid_images:
+            # 返回最新的一个
+            grid_images.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            logger.info(f"找到分镜{shot_no}的六宫格图片: {grid_images[0]}")
+            return str(grid_images[0])
+        return ""
+
+    def _generate_video_with_api(
+        self,
+        prompt: str,
+        grid_image_base64: str,
+        shot_no: int,
+        script_name: str,
+        video_output_dir: Path,
+    ) -> str:
+        """使用DashScope VideoSynthesis API (wan2.7-r2v模型) 生成视频并保存到本地"""
+        try:
+            from dashscope import VideoSynthesis
+            from http import HTTPStatus
+
+            # 设置 DashScope API 基础 URL
+            dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
+
+            # 构建media参数：六宫格图片作为reference_image
+            media = [
+                {
+                    "type": "reference_image",
+                    "url": grid_image_base64,
+                }
+            ]
+
+            logger.info(f"调用VideoSynthesis API生成视频，分镜: {shot_no}, 模型: wan2.7-r2v")
+
+            # 异步调用视频生成
+            rsp = VideoSynthesis.async_call(
+                api_key=self.api_key,
+                model='wan2.7-r2v',
+                prompt=prompt,
+                media=media,
+                resolution='720P',
+                duration=10,
+                prompt_extend=False,
+                watermark=True,
+            )
+
+            if rsp.status_code == HTTPStatus.OK:
+                logger.info(f"视频生成任务已提交，task_id: {rsp.output.task_id}")
+            else:
+                error_code = getattr(rsp, 'code', 'UNKNOWN')
+                error_message = getattr(rsp, 'message', 'Unknown error')
+                logger.error(f"视频生成任务提交失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
+                return ""
+
+            # 等待异步任务完成
+            logger.info(f"等待视频生成任务完成，task_id: {rsp.output.task_id}")
+            rsp = VideoSynthesis.wait(task=rsp, api_key=self.api_key)
+
+            if rsp.status_code == HTTPStatus.OK:
+                video_url = rsp.output.video_url
+                logger.info(f"视频生成完成，视频URL: {video_url}")
+                # 下载并保存视频
+                return self._download_and_save_video(
+                    video_url, shot_no, script_name, video_output_dir
+                )
+            else:
+                error_code = getattr(rsp, 'code', 'UNKNOWN')
+                error_message = getattr(rsp, 'message', 'Unknown error')
+                logger.error(f"视频生成失败 - status_code: {rsp.status_code}, code: {error_code}, message: {error_message}")
+                return ""
+
+        except Exception as e:
+            logger.error(f"调用VideoSynthesis API失败: {str(e)}")
+            return ""
+
+    def _download_and_save_video(
+        self,
+        video_url: str,
+        shot_no: int,
+        script_name: str,
+        video_output_dir: Path,
+    ) -> str:
+        """下载视频并保存到本地"""
+        try:
+            import urllib.request
+
+            # 删除该分镜的旧视频（避免文件堆积）
+            old_video_pattern = f"{script_name}_{shot_no}_*.mp4"
+            for old_video in video_output_dir.glob(old_video_pattern):
+                try:
+                    old_video.unlink()
+                    logger.info(f"已删除旧的视频: {old_video}")
+                except Exception as e:
+                    logger.warning(f"删除旧视频失败: {old_video}, 错误: {e}")
+
+            # 生成文件名：剧本名_分镜头号_时间戳.mp4
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_name = f"{script_name}_{shot_no}_{timestamp}.mp4"
+            file_path = video_output_dir / file_name
+
+            # 下载并保存视频
+            urllib.request.urlretrieve(video_url, str(file_path))
+            logger.info(f"视频已保存到: {file_path}")
+            return str(file_path)
+        except Exception as e:
+            logger.error(f"下载或保存视频失败: {e}")
+            return ""
+
+    def _find_first_frame_image(self, video_output_dir: Path, shot_no: int) -> str:
+        """查找指定分镜的首帧图"""
+        # 首帧图命名格式：{script_name}_{shot_no}_{timestamp}_ff.png
+        first_frame_images = list(video_output_dir.glob(f"*_{shot_no}_*_ff.png"))
+        if first_frame_images:
+            # 返回最新的一个
+            first_frame_images.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            logger.info(f"找到分镜{shot_no}的首帧图: {first_frame_images[0]}")
+            return str(first_frame_images[0])
+        return ""
+
+    def generate_video_from_first_frame(
+        self,
+        shot_no: int,
+        shotlist_text: str,
+        script_id: str,
+        script_name: str,
+        global_seed: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        基于首帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
+
+        参数:
+        - shot_no: 分镜号
+        - shotlist_text: 分镜头脚本内容
+        - script_id: 剧本ID
+        - script_name: 剧本名称
+        - global_seed: 全局统一seed
+
+        返回:
+        - {"shot_no": shot_no, "video_path": "xxx"} 或 {"shot_no": shot_no, "error": "xxx"}
+        """
+        logger.info(f"开始为分镜{shot_no}基于首帧图生成视频（seedance），剧本: {script_name}")
+
+        if not self.ark_api_key:
+            logger.error("未设置ARK_API_KEY，无法使用seedance模型")
+            return {"shot_no": shot_no, "video_path": "", "error": "未设置ARK_API_KEY，请在.env文件中配置"}
+
+        # 获取视频输出目录
+        video_output_dir = self._get_video_output_dir(script_id)
+        logger.info(f"视频输出目录: {video_output_dir}")
+
+        try:
+            # Step 1: 查找首帧图
+            first_frame_image_path = self._find_first_frame_image(video_output_dir, shot_no)
+            if not first_frame_image_path:
+                logger.warning(f"分镜{shot_no}的首帧图不存在，无法生成视频")
+                return {"shot_no": shot_no, "video_path": "", "error": "首帧图不存在，请先生成首帧图"}
+
+            # Step 2: 将首帧图转为base64 data URL
+            first_frame_base64 = self._path_to_base64_url(Path(first_frame_image_path))
+            if not first_frame_base64:
+                logger.warning(f"分镜{shot_no}的首帧图base64编码失败")
+                return {"shot_no": shot_no, "video_path": "", "error": "首帧图base64编码失败"}
+
+            # Step 3: 构建提示词
+            prompt = f"请根据首帧图片和分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当 --resolution 480p --duration 10 --camerafixed false --watermark false"
+
+            # Step 4: 调用火山方舟 Seedance API 生成视频
+            video_path = self._generate_video_with_seedance_api(
+                prompt=prompt,
+                first_frame_base64=first_frame_base64,
+                shot_no=shot_no,
+                script_name=script_name,
+                video_output_dir=video_output_dir,
+            )
+
+            if video_path:
+                logger.info(f"分镜{shot_no}的seedance视频生成完成，视频路径: {video_path}")
+                return {"shot_no": shot_no, "video_path": video_path}
+            else:
+                logger.warning(f"分镜{shot_no}的seedance视频生成失败")
+                return {"shot_no": shot_no, "video_path": "", "error": "seedance视频生成失败"}
+
+        except Exception as e:
+            logger.error(f"seedance视频生成失败: {str(e)}")
+            return {"shot_no": shot_no, "video_path": "", "error": str(e)}
+
+    def _generate_video_with_seedance_api(
+        self,
+        prompt: str,
+        first_frame_base64: str,
+        shot_no: int,
+        script_name: str,
+        video_output_dir: Path,
+    ) -> str:
+        """使用火山方舟 Ark SDK (doubao-seedance-1-0-pro-250528模型) 基于首帧图生成视频"""
+        import time
+
+        try:
+            from volcenginesdkarkruntime import Ark
+
+            # 初始化Ark客户端
+            client = Ark(
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                api_key=self.ark_api_key,
+            )
+
+            logger.info(f"调用Seedance API生成视频，分镜: {shot_no}, 模型: doubao-seedance-1-0-pro-250528")
+
+            # 创建视频生成任务
+            create_result = client.content_generation.tasks.create(
+                model="doubao-seedance-1-0-pro-250528",
+                content=[
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": first_frame_base64,
+                        },
+                    },
+                ],
+            )
+
+            task_id = create_result.id
+            logger.info(f"Seedance视频生成任务已提交，task_id: {task_id}")
+
+            # 轮询等待任务完成
+            max_wait_time = 1200  # 最大等待时间20分钟
+            start_time = time.time()
+            poll_interval = 30  # 轮询间隔30秒
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_time:
+                    logger.error(f"Seedance视频生成超时，task_id: {task_id}，已等待{elapsed:.0f}秒")
+                    return ""
+
+                get_result = client.content_generation.tasks.get(task_id=task_id)
+                status = get_result.status
+
+                if status == "succeeded":
+                    logger.info(f"Seedance视频生成成功，task_id: {task_id}")
+                    # 获取视频URL
+                    # 返回结构: ContentGenerationTask(content=Content(video_url='https://...'))
+                    video_url = None
+                    if hasattr(get_result, 'content') and get_result.content:
+                        content = get_result.content
+                        # content 是 Content 对象，video_url 直接是字符串
+                        if hasattr(content, 'video_url') and content.video_url:
+                            video_url = content.video_url
+
+                    if video_url:
+                        logger.info(f"Seedance视频URL: {video_url}")
+                        return self._download_and_save_video(
+                            video_url, shot_no, script_name, video_output_dir
+                        )
+                    else:
+                        logger.error(f"Seedance视频生成成功但未获取到视频URL，result: {get_result}")
+                        return ""
+
+                elif status == "failed":
+                    error_info = getattr(get_result, 'error', 'Unknown error')
+                    logger.error(f"Seedance视频生成失败，task_id: {task_id}，error: {error_info}")
+                    return ""
+
+                else:
+                    logger.info(f"Seedance视频生成中，task_id: {task_id}，status: {status}，已等待{elapsed:.0f}秒")
+                    time.sleep(poll_interval)
+
+        except ImportError:
+            logger.error("未安装volcenginesdkarkruntime，请运行: pip install 'volcengine-python-sdk[ark]'")
+            return ""
+        except Exception as e:
+            logger.error(f"调用Seedance API失败: {str(e)}")
             return ""
 
 
@@ -849,7 +1548,8 @@ class SceneBackgroundAgent:
         scene_group_no: int,
         scene_name: str,
         shot_scripts: List[Dict[str, Any]],
-        script_id: str
+        script_id: str,
+        global_seed: int = 0,
     ) -> Dict[str, Any]:
         """
         为指定场景组生成背景图
@@ -859,6 +1559,7 @@ class SceneBackgroundAgent:
         - scene_name: 场景名称
         - shot_scripts: 该场景组下的所有分镜脚本
         - script_id: 剧本ID
+        - global_seed: 全局统一seed，用于派生场景确定性seed
 
         返回:
         - {"scene_group": scene_group_no, "scene_name": scene_name, "background_image_path": "xxx"}
@@ -887,10 +1588,13 @@ class SceneBackgroundAgent:
             logger.info(f"生成的背景图提示词: {background_prompt}")
 
             # Step 3: 使用提示词生成背景图
+            # 派生场景确定性seed
+            scene_seed = derive_scene_seed(global_seed, scene_group_no)
             image_path = self._generate_background_image(
                 background_prompt,
                 scene_group_no,
-                image_output_dir
+                image_output_dir,
+                scene_seed
             )
 
             if image_path:
@@ -968,7 +1672,7 @@ class SceneBackgroundAgent:
             logger.error(f"生成背景图提示词失败: {str(e)}")
             return ""
 
-    def _generate_background_image(self, prompt: str, scene_group_no: int, image_output_dir: Path) -> str:
+    def _generate_background_image(self, prompt: str, scene_group_no: int, image_output_dir: Path, seed: int = None) -> str:
         """使用 qwen-image-2.0 模型生成背景图并保存到本地"""
         try:
             # 设置 DashScope API 基础 URL（北京地域）
@@ -984,8 +1688,8 @@ class SceneBackgroundAgent:
                 }
             ]
 
-            # 调用 qwen-image-2.0 模型生成图片
-            response = MultiModalConversation.call(
+            # 构建调用参数
+            call_kwargs = dict(
                 api_key=self.api_key,
                 model="qwen-image-2.0",
                 messages=messages,
@@ -996,6 +1700,14 @@ class SceneBackgroundAgent:
                 negative_prompt="低分辨率，低画质，画面过饱和，蜡像感，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。人物，角色，人脸。",
                 size='2688*1536'
             )
+            
+            # 传递seed参数实现场景一致性
+            if seed is not None:
+                call_kwargs["seed"] = seed
+                logger.info(f"场景组 {scene_group_no} 背景图生成使用seed: {seed}")
+
+            # 调用 qwen-image-2.0 模型生成图片
+            response = MultiModalConversation.call(**call_kwargs)
 
             # 检查响应状态
             if response.status_code == 200:
@@ -1082,10 +1794,10 @@ class ShotScriptGenerationAgent:
         
         try:
             # 构建提示词
-            prompt = f"""你是一个专业的分镜头脚本编写助手。你的任务是将剧本转化为紧凑、高效的分镜头脚本。
+            prompt = f"""你是一个专业的分镜头脚本编写助手。你的任务是将剧本转化为适合AI视频生成的分镜头脚本。
 
 # 核心目标
-生成适合AI视频生成的分镜脚本，要求剧情紧凑，避免碎片化，并按场景进行分组。
+生成适合AI视频生成的分镜脚本，要求**完整保留原剧本的主要内容和关键细节**，剧情连贯且节奏适中，适当剧情到一个分镜下，但也要避免因过度合并导致内容丢失，并按场景进行分组。
 
 # 重要规则
 1. **场景分组原则**：
@@ -1094,10 +1806,10 @@ class ShotScriptGenerationAgent:
    - 当场景发生明显变化时，必须开始新的场景组。
    - 输出格式中必须明确标注场景组号和场景名称。
 
-2. **合并原则**：
-   - 请尽量合并连续的对话和动作。一个分镜应包含一个完整的"剧情节拍"（例如，一段完整的对话交互，或一个连贯的动作过程）。
-   - **严禁过度拆分**。不要将每一句对话或每一个细微动作都单独生成为一个分镜。
-   - 只要场景、时间、人物状态没有发生显著变化，尽量将多句对话或动作合并在同一个分镜中，充分利用15秒的视频时长。
+2. **适度拆分与合并原则**：
+   - **内容完整性优先**：不要为了凑满10秒视频时长而强行合并大量对话或动作。如果原剧本中包含多句重要对话、关键动作细节或情绪转折，应适当拆分为多个分镜，以确保原剧本的主要内容得到完整表述。
+   - **合理规划内容量**：一个分镜应包含一个合理的"剧情节拍"（例如，一次完整的对话交互，或一个连贯的动作过程），其内容量应能在10秒视频内清晰、从容地展现，避免单镜信息过载。
+   - **避免无意义碎片化**：不要将一句简短的对话或一个极细微且无独立意义的动作单独生成为一个分镜。
 
 3. **独立性原则（关键）**：
    - 每一个分镜脚本都会被**独立**发送给不同的画师进行绘图。画师看不到其他分镜的内容。
@@ -1110,7 +1822,7 @@ class ShotScriptGenerationAgent:
    - 描述事件尽量直观客观，避免华丽辞藻，包含提升画面质量的提示词。
 
 5. **时长限制**：
-   - 每个分镜生成的视频时长不可超过15秒。请根据此上限合理规划每个分镜包含的事件量。
+   - 每个分镜生成的视频时长不可超过10秒。请根据此上限合理规划每个分镜包含的事件量，宁可多拆一个分镜，也不要让单镜内容过于拥挤。
 
 # 输出格式（新增场景分组）
 【场景组1】场景名称：xxx
@@ -1132,14 +1844,20 @@ class ShotScriptGenerationAgent:
 分镜1：...，场景：昏暗的小巷，角色妆造：黑色风衣，...
 分镜2：...，场景：昏暗的小巷，角色妆造：黑色风衣，...  <-- 正确！完整复述了场景和装束。
 
-【错误示例（过度拆分）】：
+【错误示例（过度合并导致内容丢失）】：
+【场景组1】场景名称：街道
+分镜1：...，画面描述：沈千凝无精打采地走在回家的路上，难过地自言自语："才第一天..."，然后遇到李明，李明安慰她："没关系，慢慢来"，沈千凝点头微笑。 <-- 错误！信息量过大，10秒视频无法从容展现，且丢失了情绪转折的细节。
+
+【正确示例（适度拆分保留细节）】：
+【场景组1】场景名称：街道
+分镜1：...，画面描述：沈千凝无精打采地走在回家的路上，难过地自言自语："才第一天..."。
+分镜2：...，画面描述：李明走到沈千凝身边，温柔地安慰她："没关系，慢慢来"。
+分镜3：...，画面描述：沈千凝听后抬起头，点头微笑，心情似乎好转。 <-- 正确！合理拆分，保留了完整的对话和情绪转折细节。
+
+【错误示例（无意义碎片化）】：
 【场景组1】场景名称：街道
 分镜1：...，画面描述：沈千凝走在路上。
-分镜2：...，画面描述：沈千凝自言自语。  <-- 错误！这两个动作连贯且场景未变，应合并。
-
-【正确示例（紧凑合并）】：
-【场景组1】场景名称：街道
-分镜1：...，画面描述：沈千凝无精打采地走在回家的路上，难过地自言自语："才第一天..."。 <-- 正确！合并了动作和对话。
+分镜2：...，画面描述：沈千凝自言自语。 <-- 错误！这句自言自语极短，与走路动作连贯，无需单独成镜。
 
 # 任务
 请根据以下剧本生成分镜脚本，并按场景进行分组：
@@ -1546,6 +2264,7 @@ async def run_video_generation_workflow(
     save_characters_callback=None,
     save_shots_callback=None,
     redis_update_callback=None,
+    user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     运行文生视频工作流
@@ -1559,6 +2278,7 @@ async def run_video_generation_workflow(
     - save_characters_callback: 角色信息保存到数据库的回调函数
     - save_shots_callback: 分镜脚本保存到数据库的回调函数
     - redis_update_callback: Redis状态更新回调函数
+    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
     
     返回:
     - 工作流执行结果
@@ -1570,6 +2290,10 @@ async def run_video_generation_workflow(
     """
     # 初始化LLM客户端
     llm_client = HelloAgentsLLM()
+    
+    # 生成全局统一seed，实现人物/场景一致性
+    global_seed = generate_global_seed(script_id, user_seed)
+    logger.info(f"全局统一seed已生成: {global_seed} (script_id={script_id}, user_seed={user_seed})")
     
     # 初始化checkpointer（如果提供了db_uri）
     checkpointer = None
@@ -1622,6 +2346,7 @@ async def run_video_generation_workflow(
             "shot_scripts": [],
             "shots_generated": False,
             "shots_confirmed": False,
+            "global_seed": global_seed,
             "error_message": None,
             "current_stage": "initialized",
             "created_at": datetime.utcnow().isoformat(),
@@ -1692,6 +2417,7 @@ async def resume_workflow_and_generate_three_view(
     user_id: str,
     db_uri: Optional[str] = None,
     force_regenerate: bool = False,
+    user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     恢复工作流并生成角色四视图
@@ -1702,12 +2428,17 @@ async def resume_workflow_and_generate_three_view(
     - user_id: 用户ID
     - db_uri: 数据库连接字符串
     - force_regenerate: 是否强制重新生成四视图（即使已存在）
+    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
     
     返回:
     - 工作流恢复执行结果
     """
     # 初始化LLM客户端
     llm_client = HelloAgentsLLM()
+    
+    # 生成全局统一seed（恢复时使用相同seed保证一致性）
+    global_seed = generate_global_seed(script_id, user_seed)
+    logger.info(f"恢复工作流，全局统一seed: {global_seed} (script_id={script_id})")
     
     # 初始化checkpointer
     checkpointer = None

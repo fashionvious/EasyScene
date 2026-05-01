@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class CreateScriptRequest(BaseModel):
     """创建剧本请求"""
     script_name: str = Field(..., min_length=1, max_length=30)
-    script_content: str = Field(..., min_length=10, max_length=1000)
+    script_content: str = Field(..., min_length=10, max_length=3000)
 
 
 class UpdateSingleCharacterRequest(BaseModel):
@@ -74,6 +74,26 @@ class GenerateGridImageRequest(BaseModel):
     shot_no: int
     shot_script_text: str
     scene_group_no: int  # 场景组号，用于匹配场景背景图
+
+
+class GenerateFirstFrameImageRequest(BaseModel):
+    """生成首帧图请求"""
+    shot_no: int
+    shot_script_text: str
+    scene_group_no: int  # 场景组号，用于匹配场景背景图
+    script_name: str  # 剧本名称，用于文件命名
+
+
+class GenerateVideoRequest(BaseModel):
+    """生成视频请求"""
+    shot_no: int
+    shotlist_text: str  # 分镜头脚本内容
+
+
+class GenerateVideoFromFirstFrameRequest(BaseModel):
+    """基于首帧图生成视频请求（seedance模型）"""
+    shot_no: int
+    shotlist_text: str  # 分镜头脚本内容
 
 
 # --- 响应模型 ---
@@ -119,6 +139,15 @@ class ShotScriptResponse(BaseModel):
     scene_name: str = "默认场景"  # 场景名称
     shot_group: int = 1  # 分镜头组号
     grid_image_path: Optional[str] = None  # 九宫格图片路径
+    first_frame_image_path: Optional[str] = None  # 首帧图路径
+    video_path: Optional[str] = None  # 视频路径
+
+
+class SceneBackgroundResponse(BaseModel):
+    """场景背景图响应"""
+    scene_group: int
+    scene_name: str
+    background_image_path: Optional[str] = None
 
 
 class ScriptStatusResponse(BaseModel):
@@ -129,6 +158,7 @@ class ScriptStatusResponse(BaseModel):
     status: int
     characters: List[CharacterInfoResponse]
     shot_scripts: List[ShotScriptResponse]
+    scene_backgrounds: List[SceneBackgroundResponse] = []
     is_generating_characters: bool
     is_generating_shots: bool
 
@@ -163,6 +193,33 @@ class GenerateGridImageResponse(BaseModel):
     script_id: str
     shot_no: int
     grid_image_path: str
+    message: str
+
+
+class GenerateFirstFrameImageResponse(BaseModel):
+    """生成首帧图响应"""
+    success: bool
+    script_id: str
+    shot_no: int
+    first_frame_image_path: str
+    message: str
+
+
+class GenerateVideoResponse(BaseModel):
+    """生成视频响应"""
+    success: bool
+    script_id: str
+    shot_no: int
+    video_path: str
+    message: str
+
+
+class GenerateVideoFromFirstFrameResponse(BaseModel):
+    """基于首帧图生成视频响应（seedance模型）"""
+    success: bool
+    script_id: str
+    shot_no: int
+    video_path: str
     message: str
 
 
@@ -366,6 +423,17 @@ async def api_get_script_status(
         # 添加更多调试信息
         logger.info(f"[API] 返回状态: is_generating_characters={is_generating_characters}, is_generating_shots={is_generating_shots}, characters_count={len(characters)}, shots_count={len(shot_scripts)}")
         
+        # 从Redis元数据中获取场景背景图
+        scene_backgrounds = []
+        if project_state and project_state.metadata:
+            scene_backgrounds_data = project_state.metadata.get("scene_backgrounds", [])
+            for bg in scene_backgrounds_data:
+                scene_backgrounds.append(SceneBackgroundResponse(
+                    scene_group=bg.get("scene_group", 1),
+                    scene_name=bg.get("scene_name", ""),
+                    background_image_path=bg.get("background_image_path"),
+                ))
+        
         return ScriptStatusResponse(
             script_id=str(script.id),
             script_name=script.script_name,
@@ -389,9 +457,12 @@ async def api_get_script_status(
                     scene_name=s.scene_name,
                     shot_group=s.shot_group,
                     grid_image_path=s.grid_image_path,
+                    first_frame_image_path=s.first_frame_image_path,
+                    video_path=s.video_path,
                 )
                 for s in shot_scripts
             ],
+            scene_backgrounds=scene_backgrounds,
             is_generating_characters=is_generating_characters,
             is_generating_shots=is_generating_shots,
         )
@@ -927,6 +998,222 @@ async def api_generate_grid_image(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成九宫格图片失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
+@router.post("/text2video/generate-first-frame-image/{script_id}", response_model=GenerateFirstFrameImageResponse)
+async def api_generate_first_frame_image(
+    script_id: str,
+    request: GenerateFirstFrameImageRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    为指定分镜生成首帧图
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shot_script_text: 分镜脚本内容
+    - scene_group_no: 场景组号
+    - script_name: 剧本名称
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - first_frame_image_path: 首帧图路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询剧本
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        # 检查权限
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成首帧图")
+        
+        # 触发Celery任务生成首帧图
+        from app.agent.generateVideo.tasks import generate_first_frame_image_task
+        
+        task = generate_first_frame_image_task.delay(
+            script_id=script_id,
+            shot_no=request.shot_no,
+            shot_script_text=request.shot_script_text,
+            scene_group_no=request.scene_group_no,
+            script_name=request.script_name,
+            user_id=str(current_user.id),
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateFirstFrameImageResponse(
+            success=True,
+            script_id=script_id,
+            shot_no=request.shot_no,
+            first_frame_image_path="",  # 异步生成，路径稍后通过轮询获取
+            message=f"分镜{request.shot_no}首帧图生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成首帧图失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
+@router.post("/text2video/generate-video/{script_id}", response_model=GenerateVideoResponse)
+async def api_generate_video(
+    script_id: str,
+    request: GenerateVideoRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    为指定分镜生成视频
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shotlist_text: 分镜头脚本内容
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - video_path: 视频路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询剧本
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        # 检查权限
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成视频")
+        
+        # 触发Celery任务生成视频
+        from app.agent.generateVideo.tasks import generate_video_task
+        
+        task = generate_video_task.delay(
+            script_id=script_id,
+            shot_no=request.shot_no,
+            shotlist_text=request.shotlist_text,
+            script_name=script.script_name,
+            user_id=str(current_user.id),
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateVideoResponse(
+            success=True,
+            script_id=script_id,
+            shot_no=request.shot_no,
+            video_path="",  # 异步生成，路径稍后通过轮询获取
+            message=f"分镜{request.shot_no}视频生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成视频失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
+@router.post("/text2video/generate-video-from-first-frame/{script_id}", response_model=GenerateVideoFromFirstFrameResponse)
+async def api_generate_video_from_first_frame(
+    script_id: str,
+    request: GenerateVideoFromFirstFrameRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    基于首帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shotlist_text: 分镜头脚本内容
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - video_path: 视频路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        # 查询剧本
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        # 检查权限
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成视频")
+        
+        # 触发Celery任务基于首帧图生成视频
+        from app.agent.generateVideo.tasks import generate_video_from_first_frame_task
+        
+        task = generate_video_from_first_frame_task.delay(
+            script_id=script_id,
+            shot_no=request.shot_no,
+            shotlist_text=request.shotlist_text,
+            script_name=script.script_name,
+            user_id=str(current_user.id),
+        )
+        
+        # 更新Redis状态
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateVideoFromFirstFrameResponse(
+            success=True,
+            script_id=script_id,
+            shot_no=request.shot_no,
+            video_path="",  # 异步生成，路径稍后通过轮询获取
+            message=f"分镜{request.shot_no}seedance视频生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成视频失败: {str(e)}")
     finally:
         await redis_manager.close()
 

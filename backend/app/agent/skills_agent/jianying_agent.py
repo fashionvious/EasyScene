@@ -3,7 +3,7 @@ JianYing Editor Agent - 整合 Skill 加载、CLI 执行器和 Python 执行器
 """
 import os
 import uuid
-from typing import Callable
+from typing import Callable, Awaitable
 from pathlib import Path
 
 from langchain.tools import tool
@@ -187,11 +187,75 @@ class JianYingSkillMiddleware(AgentMiddleware):
         modified_request = request.override(system_message=new_system_message)
         return handler(modified_request)
 
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """
+        将技能描述注入到系统提示中（异步版本）
+        
+        逻辑与 wrap_model_call 完全相同，只是 handler 是异步的。
+        """
+        # 构建技能附录
+        # 生成可用媒体文件摘要
+        media_summary = ""
+        try:
+            available_files = self.media_resolver.list_available()
+            if available_files:
+                media_lines = ["\n### 可用媒体文件"]
+                for f in available_files[:10]:  # 最多显示 10 个
+                    media_lines.append(f"- {f['name']} ({f['type']}, {f['size_mb']}MB)")
+                if len(available_files) > 10:
+                    media_lines.append(f"- ... 还有 {len(available_files) - 10} 个文件（使用 list_media 查看）")
+                media_summary = "\n".join(media_lines)
+        except Exception:
+            pass
+
+        skills_addendum = f"""
+## 可用技能
+
+{self.skills_prompt}
+
+{media_summary}
+
+## 工具使用指南
+
+1. **resolve_media**: 根据文件名查找视频/音频/图片的完整路径（用户只需提供文件名，无需完整路径）
+2. **list_media**: 列出所有可用的媒体文件
+3. **load_skill**: 当需要详细了解某个技能时，使用此工具加载完整内容
+4. **execute_cli_script**: 执行 CLI 脚本（如素材搜索、自动导出等）
+5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
+6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
+7. **validate_jyproject_code**: 验证代码语法（不实际执行）
+
+## 工作流程
+
+1. **当用户提到视频/音频/图片文件时，先用 `resolve_media` 解析文件名获取完整路径**
+   - 用户说 "test01.mp4" -> 调用 resolve_media("test01.mp4") -> 得到完整路径
+   - 用户说 "test" -> 调用 resolve_media("test") -> 模糊匹配
+   - 用户给完整路径 -> 调用 resolve_media 验证文件是否存在
+2. 使用 `load_skill("jianying-editor")` 了解整体能力
+3. 根据任务类型选择合适的规则（如 `load_skill("rule_media")`）
+4. 对于简单任务，使用 CLI 脚本（如 `execute_cli_script`）
+5. 对于复杂编排，生成 JyProject 代码并使用 `execute_jyproject_code`
+"""
+
+        # 追加到系统消息
+        new_content = list(request.system_message.content_blocks) + [
+            {"type": "text", "text": skills_addendum}
+        ]
+        new_system_message = SystemMessage(content=new_content)
+
+        # 创建修改后的请求
+        modified_request = request.override(system_message=new_system_message)
+        return await handler(modified_request)
+
 
 def create_jianying_agent(
     skill_root: str,
     media_search_paths: list[str] = None,
-    model_name: str = "qwen3-max-2026-01-23",
+    model_name: str = "qwen3.6-plus",
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_key: str = None,
     system_prompt: str = None

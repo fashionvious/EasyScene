@@ -40,6 +40,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip"
 
 // 类型定义
 interface CharacterInfo {
@@ -57,6 +62,14 @@ interface ShotScript {
   scene_name: string   // 场景名称
   shot_group: number   // 分镜头组号
   grid_image_path?: string | null  // 九宫格图片路径
+  first_frame_image_path?: string | null  // 首帧图路径
+  video_path?: string | null  // 视频路径
+}
+
+interface SceneBackground {
+  scene_group: number
+  scene_name: string
+  background_image_path?: string | null
 }
 
 interface ScriptStatusResponse {
@@ -66,6 +79,7 @@ interface ScriptStatusResponse {
   status: number
   characters: CharacterInfo[]
   shot_scripts: ShotScript[]
+  scene_backgrounds: SceneBackground[]
   is_generating_characters: boolean
   is_generating_shots: boolean
 }
@@ -318,6 +332,115 @@ async function generateGridImage(
   return response.json()
 }
 
+// 6.5 生成首帧图API
+interface GenerateFirstFrameImageResponse {
+  success: boolean
+  script_id: string
+  shot_no: number
+  first_frame_image_path: string
+  message: string
+}
+
+async function generateFirstFrameImage(
+  scriptId: string,
+  shotNo: number,
+  shotScriptText: string,
+  sceneGroupNo: number,
+  scriptName: string,
+): Promise<GenerateFirstFrameImageResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-first-frame-image/${scriptId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      shot_no: shotNo,
+      shot_script_text: shotScriptText,
+      scene_group_no: sceneGroupNo,
+      script_name: scriptName,
+    }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `生成首帧图失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+// 7. 生成视频API
+interface GenerateVideoResponse {
+  success: boolean
+  script_id: string
+  shot_no: number
+  video_path: string
+  message: string
+}
+
+async function generateVideo(
+  scriptId: string,
+  shotNo: number,
+  shotlistText: string,
+): Promise<GenerateVideoResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-video/${scriptId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      shot_no: shotNo,
+      shotlist_text: shotlistText,
+    }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `生成视频失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+// 7.5 基于首帧图生成视频API（seedance模型）
+interface GenerateVideoFromFirstFrameResponse {
+  success: boolean
+  script_id: string
+  shot_no: number
+  video_path: string
+  message: string
+}
+
+async function generateVideoFromFirstFrame(
+  scriptId: string,
+  shotNo: number,
+  shotlistText: string,
+): Promise<GenerateVideoFromFirstFrameResponse> {
+  const token = localStorage.getItem("access_token");
+  if (!token) throw new Error("用户未登录");
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-video-from-first-frame/${scriptId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      shot_no: shotNo,
+      shotlist_text: shotlistText,
+    }),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `生成视频失败: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 export const Route = createFileRoute("/_layout/text2video/$scriptId")({
   component: ScriptDetail,
   head: () => ({
@@ -388,6 +511,10 @@ function ScriptDetail() {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false) // 确认对话框是否打开
   const [pendingSceneGroup, setPendingSceneGroup] = useState<{ sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[] } | null>(null) // 待确认的场景组信息
   const [generatingGridShot, setGeneratingGridShot] = useState<number | null>(null) // 正在生成九宫格图片的分镜号
+  const [generatingVideoShot, setGeneratingVideoShot] = useState<number | null>(null) // 正在生成视频的分镜号
+  const [generatingThreeViewCharacterIds, setGeneratingThreeViewCharacterIds] = useState<Set<string>>(new Set()) // 正在生成四视图的角色ID集合
+  const [videoConfirmDialogOpen, setVideoConfirmDialogOpen] = useState(false) // 视频生成确认对话框是否打开
+  const [pendingVideoShot, setPendingVideoShot] = useState<{ shotNo: number; shotId: string; totalScript: string } | null>(null) // 待确认生成视频的分镜信息
 
   // 使用 ref 跟踪是否应该接受远程更新
   const shouldAcceptRemoteUpdateRef = useRef(true)
@@ -413,6 +540,15 @@ function ScriptDetail() {
         return 3000 // 每3秒轮询一次检查四视图生成状态
       }
     }
+    // 如果有分镜正在生成视频（video_path为空但首帧图已存在），持续轮询
+    if (data?.shot_scripts && data.shot_scripts.length > 0) {
+      const hasGeneratingVideo = data.shot_scripts.some(
+        (shot: ShotScript) => !shot.video_path && shot.first_frame_image_path
+      )
+      if (hasGeneratingVideo) {
+        return 5000 // 每5秒轮询一次检查视频生成状态
+      }
+    }
     // 默认情况下，每10秒轮询一次，确保数据是最新的
     return 10000
   },
@@ -425,6 +561,30 @@ function ScriptDetail() {
   // 修复：只有在非编辑状态下才更新本地数据
   useEffect(() => {
     if (scriptData) {
+      // 场景背景图数据和四视图防呆状态始终同步（不受编辑锁定影响）
+      if (scriptData.scene_backgrounds && scriptData.scene_backgrounds.length > 0) {
+        const bgMap = new Map<number, string>()
+        for (const bg of scriptData.scene_backgrounds) {
+          if (bg.background_image_path) {
+            bgMap.set(bg.scene_group, bg.background_image_path)
+          }
+        }
+        setSceneBackgrounds(bgMap)
+      }
+
+      // 检查正在生成四视图的角色是否已完成，如果完成则从防呆集合中移除
+      setGeneratingThreeViewCharacterIds(prev => {
+        if (prev.size === 0) return prev
+        const next = new Set(prev)
+        for (const charId of prev) {
+          const char = scriptData.characters.find(c => c.id === charId)
+          if (char && char.three_view_image_path) {
+            next.delete(charId)
+          }
+        }
+        return next.size === prev.size ? prev : next
+      })
+
       // 检查是否应该接受远程更新
       if (!shouldAcceptRemoteUpdateRef.current) {
         console.log('[DEBUG] 用户正在编辑，拒绝远程数据覆盖')
@@ -438,7 +598,7 @@ function ScriptDetail() {
       setEditableCharacters(scriptData.characters)
       setEditableShots(scriptData.shot_scripts)
     }
-  }, [scriptData?.script_id, scriptData?.characters, scriptData?.shot_scripts])
+  }, [scriptData?.script_id, scriptData?.characters, scriptData?.shot_scripts, scriptData?.scene_backgrounds])
   
   // 保存单个角色信息
   const handleSaveCharacter = async (character: CharacterInfo) => {
@@ -454,6 +614,9 @@ function ScriptDetail() {
     try {
       await updateSingleCharacter(character.id, character.role_name, character.role_desc)
       setSuccessMessage("已提交，正在生成四视图...")
+
+      // 提交成功后，标记该角色正在生成四视图（防呆）
+      setGeneratingThreeViewCharacterIds(prev => new Set(prev).add(character.id))
 
       // 提交成功后，更新原始数据，解除编辑锁定
       setOriginalCharacters([...editableCharacters])
@@ -562,6 +725,41 @@ function ScriptDetail() {
     setPendingSceneGroup(null)
   }
 
+  // 打开视频生成确认对话框
+  const openVideoConfirmDialog = (shotNo: number, shotId: string, totalScript: string) => {
+    setPendingVideoShot({ shotNo, shotId, totalScript })
+    setVideoConfirmDialogOpen(true)
+  }
+
+  // 确认生成视频
+  const handleConfirmVideoGenerate = async () => {
+    if (!pendingVideoShot) return
+    const { shotNo, totalScript } = pendingVideoShot
+    setVideoConfirmDialogOpen(false)
+    setPendingVideoShot(null)
+
+    setGeneratingVideoShot(shotNo)
+    setError(null)
+    setSuccessMessage(null)
+    try {
+      const result = await generateVideoFromFirstFrame(scriptId, shotNo, totalScript)
+      setSuccessMessage(result.message || `分镜${shotNo}视频生成任务已启动`)
+      setOriginalShots([...editableShots])
+      shouldAcceptRemoteUpdateRef.current = true
+      setTimeout(() => setSuccessMessage(null), 10000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "视频生成失败")
+    } finally {
+      setGeneratingVideoShot(null)
+    }
+  }
+
+  // 取消生成视频
+  const handleCancelVideoGenerate = () => {
+    setVideoConfirmDialogOpen(false)
+    setPendingVideoShot(null)
+  }
+
   // 生成九宫格图片
   const handleGenerateGridImage = async (shotNo: number, shotScriptText: string, sceneGroupNo: number) => {
     setGeneratingGridShot(shotNo)
@@ -624,7 +822,7 @@ function ScriptDetail() {
               确认提交
             </DialogTitle>
             <DialogDescription className="text-base pt-2">
-              此操作消耗token较多，请确定当前场景组内容已满意。
+              此操作会根据当前场景组中的场景描述生成背景参考图，请确定相关信息无误。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="sm:justify-end gap-2">
@@ -638,6 +836,36 @@ function ScriptDetail() {
             <Button
               type="button"
               onClick={handleConfirmSubmit}
+            >
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 视频生成确认对话框 */}
+      <Dialog open={videoConfirmDialogOpen} onOpenChange={setVideoConfirmDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              确认生成视频
+            </DialogTitle>
+            <DialogDescription className="text-base pt-2">
+              生成视频会消耗大量token，请确定分镜内容。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCancelVideoGenerate}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmVideoGenerate}
             >
               确定
             </Button>
@@ -731,8 +959,15 @@ function ScriptDetail() {
                                 const newChars = [...editableCharacters]
                                 newChars[index].role_name = e.target.value
                                 setEditableCharacters(newChars)
+                                // 用户修改了角色信息，允许重新提交
+                                setGeneratingThreeViewCharacterIds(prev => {
+                                  if (!prev.has(char.id)) return prev
+                                  const next = new Set(prev)
+                                  next.delete(char.id)
+                                  return next
+                                })
                               }}
-                              disabled={isUpdating || isConfirming}
+                              disabled={isUpdating || isConfirming || generatingThreeViewCharacterIds.has(char.id)}
                             />
                           </TableCell>
                           <TableCell>
@@ -744,8 +979,15 @@ function ScriptDetail() {
                                 const newChars = [...editableCharacters]
                                 newChars[index].role_desc = e.target.value
                                 setEditableCharacters(newChars)
+                                // 用户修改了角色信息，允许重新提交
+                                setGeneratingThreeViewCharacterIds(prev => {
+                                  if (!prev.has(char.id)) return prev
+                                  const next = new Set(prev)
+                                  next.delete(char.id)
+                                  return next
+                                })
                               }}
-                              disabled={isUpdating || isConfirming}
+                              disabled={isUpdating || isConfirming || generatingThreeViewCharacterIds.has(char.id)}
                               className="min-h-[60px]"
                             />
                           </TableCell>
@@ -754,35 +996,17 @@ function ScriptDetail() {
                               <Button
                                 size="sm"
                                 onClick={() => handleSaveCharacter(char)}
-                                disabled={isUpdating || isConfirming || !char.id}
+                                disabled={isUpdating || isConfirming || !char.id || generatingThreeViewCharacterIds.has(char.id)}
                               >
-                                {isUpdating ? (
+                                {isUpdating || generatingThreeViewCharacterIds.has(char.id) ? (
                                   <>
                                     <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                                    保存中
+                                    生成中
                                   </>
                                 ) : (
                                   <>
                                     <Check className="h-4 w-4 mr-1" />
                                     提交
-                                  </>
-                                )}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleConfirmThreeView(char)}
-                                disabled={isUpdating || isConfirming || !char.id || !hasThreeView}
-                              >
-                                {isConfirming ? (
-                                  <>
-                                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                                    确认中
-                                  </>
-                                ) : (
-                                  <>
-                                    <Check className="h-4 w-4 mr-1" />
-                                    确定
                                   </>
                                 )}
                               </Button>
@@ -866,15 +1090,11 @@ function ScriptDetail() {
 
                       {/* 背景图显示 */}
                       {backgroundImagePath && (
-                        <div className="border rounded-lg p-4">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Film className="h-4 w-4 text-purple-500" />
-                            <span className="text-sm font-medium">场景背景图</span>
-                          </div>
+                        <div className="inline-block">
                           <img
                             src={convertImagePathToUrl(backgroundImagePath, scriptId)!}
                             alt={`场景组${sceneGroupNo}背景图`}
-                            className="w-full max-w-2xl rounded cursor-pointer hover:opacity-80 transition-opacity"
+                            className="h-16 rounded cursor-pointer hover:opacity-80 transition-opacity"
                             onClick={() => setPreviewImage(backgroundImagePath)}
                           />
                         </div>
@@ -890,7 +1110,7 @@ function ScriptDetail() {
                             {groupShots.map((shot, index) => {
                               const shotIndex = editableShots.findIndex(s => s.id === shot.id)
                               const isGeneratingGrid = generatingGridShot === shot.shot_no
-                              const hasGridImage = !!convertImagePathToUrl(shot.grid_image_path, scriptId)
+                              const hasFirstFrameImage = !!convertImagePathToUrl(shot.first_frame_image_path, scriptId)
                               return (
                                 <div key={shot.id || index} className="space-y-2">
                                   <div className="flex items-start gap-3">
@@ -898,13 +1118,13 @@ function ScriptDetail() {
                                       <span className="text-sm font-medium">
                                         分镜{shot.shot_no}
                                       </span>
-                                      {/* 九宫格预览图 */}
-                                      {hasGridImage ? (
+                                      {/* 首帧图预览 */}
+                                      {hasFirstFrameImage ? (
                                         <img
-                                          src={convertImagePathToUrl(shot.grid_image_path, scriptId)!}
-                                          alt={`分镜${shot.shot_no}九宫格`}
+                                          src={convertImagePathToUrl(shot.first_frame_image_path, scriptId)!}
+                                          alt={`分镜${shot.shot_no}首帧图`}
                                           className="w-12 h-8 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity mt-1"
-                                          onClick={() => setPreviewImage(shot.grid_image_path!)}
+                                          onClick={() => setPreviewImage(shot.first_frame_image_path!)}
                                         />
                                       ) : null}
                                     </div>
@@ -922,56 +1142,107 @@ function ScriptDetail() {
                                     />
                                   </div>
                                   {/* 提交和确定按钮 */}
-                                  <div className="flex justify-end gap-2">
-                                    <Button
-                                      size="sm"
-                                      onClick={async () => {
-                                        // 先更新数据库中的total_script，再生成九宫格图片
-                                        setGeneratingGridShot(shot.shot_no)
-                                        setError(null)
-                                        setSuccessMessage(null)
-                                        try {
-                                          await updateSingleShot(shot.id, shot.total_script)
-                                          const result = await generateGridImage(scriptId, shot.shot_no, shot.total_script, sceneGroupNo)
-                                          setSuccessMessage(result.message || `分镜${shot.shot_no}已提交，九宫格图片生成任务已启动`)
-                                          // 更新原始数据，解除编辑锁定
-                                          setOriginalShots([...editableShots])
-                                          shouldAcceptRemoteUpdateRef.current = true
-                                          setTimeout(() => setSuccessMessage(null), 10000)
-                                        } catch (err) {
-                                          setError(err instanceof Error ? err.message : "提交失败")
-                                        } finally {
-                                          setGeneratingGridShot(null)
-                                        }
-                                      }}
-                                      disabled={isGeneratingGrid || updateShotsMutation.isPending}
-                                    >
-                                      {isGeneratingGrid ? (
-                                        <>
-                                          <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                                          生成中
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Sparkles className="h-4 w-4 mr-1" />
-                                          提交
-                                        </>
-                                      )}
-                                    </Button>
+                                  <div className="flex justify-end gap-2 items-center">
+                                    {(() => {
+                                      // 防呆检查：所有角色四视图是否生成完 + 当前场景组背景图是否生成完
+                                      const allCharactersHaveThreeView = editableCharacters.length > 0 && editableCharacters.every(c => !!c.three_view_image_path)
+                                      const hasSceneBackground = !!sceneBackgrounds.get(sceneGroupNo)
+                                      const canSubmitShot = allCharactersHaveThreeView && hasSceneBackground
+                                      const shotSubmitDisabled = isGeneratingGrid || updateShotsMutation.isPending || !canSubmitShot
+                                      // 生成具体的缺失提示
+                                      const missingHints: string[] = []
+                                      if (!allCharactersHaveThreeView) missingHints.push("角色四视图")
+                                      if (!hasSceneBackground) missingHints.push("场景背景图")
+                                      const missingText = missingHints.length > 0 ? `${missingHints.join("、")}缺失` : ""
+                                      return (
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <span className="inline-flex">
+                                              <Button
+                                                size="sm"
+                                                onClick={async () => {
+                                                  // 先更新数据库中的total_script，再生成首帧图
+                                                  setGeneratingGridShot(shot.shot_no)
+                                                  setError(null)
+                                                  setSuccessMessage(null)
+                                                  try {
+                                                    await updateSingleShot(shot.id, shot.total_script)
+                                                    const result = await generateFirstFrameImage(scriptId, shot.shot_no, shot.total_script, sceneGroupNo, scriptData.script_name)
+                                                    setSuccessMessage(result.message || `分镜${shot.shot_no}已提交，首帧图生成任务已启动`)
+                                                    // 更新原始数据，解除编辑锁定
+                                                    setOriginalShots([...editableShots])
+                                                    shouldAcceptRemoteUpdateRef.current = true
+                                                    setTimeout(() => setSuccessMessage(null), 10000)
+                                                  } catch (err) {
+                                                    setError(err instanceof Error ? err.message : "提交失败")
+                                                  } finally {
+                                                    setGeneratingGridShot(null)
+                                                  }
+                                                }}
+                                                disabled={shotSubmitDisabled}
+                                              >
+                                                {isGeneratingGrid ? (
+                                                  <>
+                                                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                                    生成中
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <Sparkles className="h-4 w-4 mr-1" />
+                                                    提交
+                                                  </>
+                                                )}
+                                              </Button>
+                                            </span>
+                                          </TooltipTrigger>
+                                          <TooltipContent>
+                                            {canSubmitShot ? "提交生成首帧图" : missingText}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      )
+                                    })()}
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      onClick={() => {
-                                        // 确认当前分镜内容，恢复原始数据
-                                        const newShots = [...editableShots]
-                                        newShots[shotIndex] = originalShots[shotIndex]
-                                        setEditableShots(newShots)
-                                      }}
-                                      disabled={updateShotsMutation.isPending}
+                                      onClick={() => openVideoConfirmDialog(shot.shot_no, shot.id, shot.total_script)}
+                                      disabled={!hasFirstFrameImage || generatingVideoShot === shot.shot_no}
                                     >
-                                      <Check className="h-4 w-4 mr-1" />
-                                      确定
+                                      {generatingVideoShot === shot.shot_no ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                          生成视频中
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Check className="h-4 w-4 mr-1" />
+                                          确定
+                                        </>
+                                      )}
                                     </Button>
+                                    {/* 查看视频超链接 */}
+                                    {(() => {
+                                      const videoUrl = convertImagePathToUrl(shot.video_path, scriptId)
+                                      const hasVideo = !!videoUrl
+                                      return (
+                                        <a
+                                          href={hasVideo ? videoUrl! : undefined}
+                                          target={hasVideo ? "_blank" : undefined}
+                                          rel={hasVideo ? "noopener noreferrer" : undefined}
+                                          onClick={(e) => {
+                                            if (!hasVideo) {
+                                              e.preventDefault()
+                                            }
+                                          }}
+                                          className={`text-sm underline-offset-4 ${
+                                            hasVideo
+                                              ? "text-green-600 hover:text-green-800 hover:underline cursor-pointer"
+                                              : "text-gray-400 cursor-not-allowed"
+                                          }`}
+                                        >
+                                          查看视频
+                                        </a>
+                                      )
+                                    })()}
                                   </div>
                                 </div>
                               )

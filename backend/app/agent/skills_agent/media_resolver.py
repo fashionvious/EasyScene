@@ -8,12 +8,12 @@ from typing import Optional
 
 
 # 默认搜索路径（相对于 skills_agent/ 目录）
-DEFAULT_MEDIA_SEARCH_PATHS = [
-    "video",                    # skills_agent/video/
-    "audio",                    # skills_agent/audio/
-    "assets",                   # skills_agent/assets/
-    "../assets",                # 上级 assets/
-    "../../assets",             # 更上级
+DEFAULT_MEDIA_SEARCH_PATHS = ["D:\1-6 AI_Agent\0_reading_sourcecode\full-stack-fastapi-template\backend\script_resources"
+    # "video",                    # skills_agent/video/
+    # "audio",                    # skills_agent/audio/
+    # "assets",                   # skills_agent/assets/
+    # "../assets",                # 上级 assets/
+    # "../../assets",             # 更上级
 ]
 
 

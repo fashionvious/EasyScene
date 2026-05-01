@@ -17,7 +17,9 @@ const baseItems: Item[] = [
   { icon: Briefcase, title: "API配置", path: "/items" },
   { icon: Briefcase, title: "热点视频", path: "/spotvideos" },
   { icon: Briefcase, title: "文生图", path: "/text2image" },
-  { icon: Briefcase, title: "文生视频", path: "/text2video" }
+  { icon: Briefcase, title: "文生视频", path: "/text2video" },
+  { icon: Briefcase, title: "后期剪辑", path: "/video_editing" }
+
 ]
 
 export function AppSidebar() {

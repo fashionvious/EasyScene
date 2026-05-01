@@ -106,7 +106,7 @@ function Text2VideoLayout() {
                   )}
                 >
                   <FileText className="h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">
+                  <span className="truncate text-xs">
                     {script.script_name}
                   </span>
                 </Link>

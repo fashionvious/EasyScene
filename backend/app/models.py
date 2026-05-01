@@ -222,6 +222,8 @@ class ShotScriptBase(SQLModel):
     scene_name: str = Field(default="默认场景", max_length=255)  # 场景名称
     shot_group: int = Field(default=1)  # 分镜头组号（每个场景下每4个分镜为1组）
     grid_image_path: str | None = Field(default=None, max_length=500)  # 九宫格图片路径
+    first_frame_image_path: str | None = Field(default=None, max_length=500)  # 首帧图路径
+    video_path: str | None = Field(default=None, max_length=500)  # 视频路径
 
 
 # Properties to receive on shot script creation
@@ -240,6 +242,8 @@ class ShotScriptUpdate(SQLModel):
     scene_name: str | None = Field(default=None, max_length=255)
     shot_group: int | None = None
     grid_image_path: str | None = Field(default=None, max_length=500)
+    first_frame_image_path: str | None = Field(default=None, max_length=500)
+    video_path: str | None = Field(default=None, max_length=500)
 
 
 # Database model for shot_script table
@@ -305,4 +309,90 @@ class OperationLogPublic(OperationLogBase):
 
 class OperationLogsPublic(SQLModel):
     data: list[OperationLogPublic]
+    count: int
+
+
+# ==================== Conversation Models ====================
+# Shared properties
+class ConversationBase(SQLModel):
+    title: str = Field(default="新建会话", max_length=255)
+    title_set: bool = Field(default=False)
+
+
+# Properties to receive on conversation creation
+class ConversationCreate(ConversationBase):
+    user_id: uuid.UUID
+    script_id: uuid.UUID
+
+
+# Properties to receive on conversation update
+class ConversationUpdate(SQLModel):
+    title: str | None = Field(default=None, max_length=255)
+    title_set: bool | None = None
+
+
+# Database model for conversation table
+class Conversation(ConversationBase, table=True):
+    __tablename__ = "conversation"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    script_id: uuid.UUID = Field(foreign_key="script.id", nullable=False, ondelete="CASCADE")
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+    update_time: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: int = Field(default=0)
+
+    # Relationships
+    user: User | None = Relationship()
+    script: Script | None = Relationship()
+    messages: list["ChatMessage"] = Relationship(back_populates="conversation", cascade_delete=True)
+
+
+# Properties to return via API
+class ConversationPublic(ConversationBase):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    script_id: uuid.UUID
+    create_time: datetime
+    update_time: datetime
+
+
+class ConversationsPublic(SQLModel):
+    data: list[ConversationPublic]
+    count: int
+
+
+# ==================== Chat Message Models ====================
+# Shared properties
+class ChatMessageBase(SQLModel):
+    role: str = Field(max_length=20)  # "user" or "assistant"
+    content: str
+
+
+# Properties to receive on chat message creation
+class ChatMessageCreate(ChatMessageBase):
+    conversation_id: uuid.UUID
+
+
+# Database model for chat_message table
+class ChatMessage(ChatMessageBase, table=True):
+    __tablename__ = "chat_message"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    conversation_id: uuid.UUID = Field(foreign_key="conversation.id", nullable=False, ondelete="CASCADE")
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    conversation: Conversation | None = Relationship(back_populates="messages")
+
+
+# Properties to return via API
+class ChatMessagePublic(ChatMessageBase):
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    create_time: datetime
+
+
+class ChatMessagesPublic(SQLModel):
+    data: list[ChatMessagePublic]
     count: int
