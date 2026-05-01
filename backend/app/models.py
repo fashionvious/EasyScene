@@ -147,6 +147,7 @@ class Script(ScriptBase, table=True):
     # Relationships
     characters: list["CharacterInfo"] = Relationship(back_populates="script")
     shot_scripts: list["ShotScript"] = Relationship(back_populates="script")
+    scene_graphs: list["SceneGraph"] = Relationship(back_populates="script", cascade_delete=True)
 
 
 # Properties to return via API
@@ -212,6 +213,50 @@ class CharacterInfosPublic(SQLModel):
     count: int
 
 
+# ==================== Scene Graph Models ====================
+class SceneGraphBase(SQLModel):
+    scene_group: int = Field(default=1)  # 场景组号
+    scene_name: str = Field(default="默认场景", max_length=255)  # 场景名称
+    scene_image_path: str | None = Field(default=None, max_length=500)  # 场景图路径
+    version: int = Field(default=1)
+
+
+class SceneGraphCreate(SceneGraphBase):
+    script_id: uuid.UUID
+
+
+class SceneGraphUpdate(SQLModel):
+    scene_group: int | None = None
+    scene_name: str | None = Field(default=None, max_length=255)
+    scene_image_path: str | None = Field(default=None, max_length=500)
+    version: int | None = None
+
+
+class SceneGraph(SceneGraphBase, table=True):
+    __tablename__ = "scene_graph"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    script_id: uuid.UUID = Field(foreign_key="script.id", nullable=False, ondelete="CASCADE")
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+    update_time: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: int = Field(default=0)
+
+    script: Script | None = Relationship(back_populates="scene_graphs")
+    shot_scripts: list["ShotScript"] = Relationship(back_populates="scene")
+
+
+class SceneGraphPublic(SceneGraphBase):
+    id: uuid.UUID
+    script_id: uuid.UUID
+    create_time: datetime
+    update_time: datetime
+
+
+class SceneGraphsPublic(SQLModel):
+    data: list[SceneGraphPublic]
+    count: int
+
+
 # ==================== Shot Script Models ====================
 # Shared properties
 class ShotScriptBase(SQLModel):
@@ -223,6 +268,7 @@ class ShotScriptBase(SQLModel):
     shot_group: int = Field(default=1)  # 分镜头组号（每个场景下每4个分镜为1组）
     grid_image_path: str | None = Field(default=None, max_length=500)  # 九宫格图片路径
     first_frame_image_path: str | None = Field(default=None, max_length=500)  # 首帧图路径
+    last_frame_image_path: str | None = Field(default=None, max_length=500)  # 尾帧图路径
     video_path: str | None = Field(default=None, max_length=500)  # 视频路径
 
 
@@ -230,6 +276,7 @@ class ShotScriptBase(SQLModel):
 class ShotScriptCreate(ShotScriptBase):
     script_id: uuid.UUID
     role_id: uuid.UUID | None = None
+    scene_id: uuid.UUID | None = None
 
 
 # Properties to receive on shot script update
@@ -238,11 +285,13 @@ class ShotScriptUpdate(SQLModel):
     version: int | None = None
     total_script: str | None = None
     role_id: uuid.UUID | None = None
+    scene_id: uuid.UUID | None = None
     scene_group: int | None = None
     scene_name: str | None = Field(default=None, max_length=255)
     shot_group: int | None = None
     grid_image_path: str | None = Field(default=None, max_length=500)
     first_frame_image_path: str | None = Field(default=None, max_length=500)
+    last_frame_image_path: str | None = Field(default=None, max_length=500)
     video_path: str | None = Field(default=None, max_length=500)
 
 
@@ -253,6 +302,7 @@ class ShotScript(ShotScriptBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     script_id: uuid.UUID = Field(foreign_key="script.id", nullable=False)
     role_id: uuid.UUID | None = Field(default=None, foreign_key="character_info.id")
+    scene_id: uuid.UUID | None = Field(default=None, foreign_key="scene_graph.id")
     create_time: datetime = Field(default_factory=datetime.utcnow)
     update_time: datetime = Field(default_factory=datetime.utcnow)
     is_deleted: int = Field(default=0)
@@ -260,6 +310,7 @@ class ShotScript(ShotScriptBase, table=True):
     # Relationships
     script: Script | None = Relationship(back_populates="shot_scripts")
     character: CharacterInfo | None = Relationship(back_populates="shot_scripts")
+    scene: SceneGraph | None = Relationship(back_populates="shot_scripts")
 
 
 # Properties to return via API
@@ -267,6 +318,7 @@ class ShotScriptPublic(ShotScriptBase):
     id: uuid.UUID
     script_id: uuid.UUID
     role_id: uuid.UUID | None
+    scene_id: uuid.UUID | None
     create_time: datetime
     update_time: datetime
 
