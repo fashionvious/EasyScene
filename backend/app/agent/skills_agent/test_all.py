@@ -37,8 +37,12 @@ print(f"✅ 成功解析 {len(skills)} 个技能")
 
 # 显示主技能
 main_skill = parser.get_skill("jianying-editor")
-print(f"✅ 主技能: {main_skill['name']}")
-print(f"   描述: {main_skill['description'][:60]}...")
+if main_skill is not None:
+    print(f"✅ 主技能: {main_skill['name']}")
+    print(f"   描述: {main_skill['description'][:60]}...")
+else:
+    print("⚠️ 未找到主技能 (main_skill 为 None)")
+
 
 # 显示规则数量
 rules = parser.get_skills_by_category("rule")

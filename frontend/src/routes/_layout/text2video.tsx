@@ -1,6 +1,11 @@
-import { createFileRoute, Outlet, useParams, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { Video, FileText, Loader2 } from "lucide-react"
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useParams,
+} from "@tanstack/react-router"
+import { FileText, Loader2, Plus, Video } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 
@@ -22,8 +27,8 @@ async function getScriptList() {
 
   const response = await fetch(`${API_BASE_URL}/api/v1/text2video/scripts`, {
     headers: {
-      "Authorization": `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+    },
   })
   if (!response.ok) {
     throw new Error(`获取剧本列表失败`)
@@ -36,11 +41,14 @@ async function getScriptInfo(scriptId: string) {
   const token = localStorage.getItem("access_token")
   if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/script-status/${scriptId}`, {
-    headers: {
-      "Authorization": `Bearer ${token}`
-    }
-  })
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/script-status/${scriptId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  )
   if (!response.ok) {
     throw new Error(`获取剧本信息失败`)
   }
@@ -102,13 +110,11 @@ function Text2VideoLayout() {
                     "flex items-center gap-2 p-3 rounded-[10px] text-caption mb-1 wise-nav-hover",
                     scriptId === script.id
                       ? "bg-[#9fe870]/20 text-[#163300] dark:text-white"
-                      : "text-muted-foreground hover:text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <FileText className="h-4 w-4 flex-shrink-0" />
-                  <span className="truncate text-xs">
-                    {script.script_name}
-                  </span>
+                  <span className="truncate text-xs">{script.script_name}</span>
                 </Link>
               ))
             ) : (
@@ -116,6 +122,13 @@ function Text2VideoLayout() {
                 暂无剧本
               </div>
             )}
+            <Link
+              to="/text2video/"
+              className="flex items-center justify-center gap-1 p-2 mt-2 rounded-[10px] text-caption text-muted-foreground hover:text-foreground wise-nav-hover"
+            >
+              <Plus className="h-4 w-4" />
+              
+            </Link>
           </div>
         </ScrollArea>
       </div>

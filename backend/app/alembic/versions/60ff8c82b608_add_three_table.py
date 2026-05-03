@@ -72,9 +72,9 @@ def upgrade():
     sa.ForeignKeyConstraint(['script_id'], ['script.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.drop_index(op.f('idx_created_at'), table_name='generated_images')
-    op.drop_index(op.f('idx_prompt'), table_name='generated_images', postgresql_using='gin')
-    op.drop_table('generated_images')
+    op.drop_index(op.f('idx_created_at'), table_name='generated_images', if_exists=True)
+    op.drop_index(op.f('idx_prompt'), table_name='generated_images', postgresql_using='gin', if_exists=True)
+    op.drop_table('generated_images', if_exists=True)
     # ### end Alembic commands ###
 
 

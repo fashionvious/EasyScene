@@ -3,6 +3,8 @@ services:
   db:
     image: postgres:17
     restart: always
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -135,7 +137,17 @@ services:
 
       # Enable redirection for HTTP and HTTPS
       - traefik.http.routers.${STACK_NAME?Variable not set}-backend-http.middlewares=https-redirect
-
+  redis:
+    image: redis:7-alpine
+    restart: "no" # 与你当前开发环境配置保持一致
+    ports:
+      - "6379:6379"
+    # 关键配置：启动时设置密码，并开启持久化
+    command: redis-server --requirepass 123456 --appendonly yes
+    volumes:
+      - app-redis-data:/data
+    networks:
+      - default
   frontend:
     image: '${DOCKER_IMAGE_FRONTEND?Variable not set}:${TAG-latest}'
     restart: always
@@ -166,7 +178,8 @@ services:
       - traefik.http.routers.${STACK_NAME?Variable not set}-frontend-http.middlewares=https-redirect
 volumes:
   app-db-data:
-
+  app-redis-data:
+  
 networks:
   traefik-public:
     # Allow setting it to false for testing

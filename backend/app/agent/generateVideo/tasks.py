@@ -1,70 +1,42 @@
 """
 文生视频Celery任务
-异步执行LangGraph工作流，避免阻塞API请求
+纯 Celery 调度壳：只负责异步任务调度，业务逻辑全部委托给 service 层
 """
-import os
 import asyncio
 import sys
 import logging
-import uuid
 from typing import Dict, Any, Optional
-from celery import Celery
-from datetime import datetime
-from pathlib import Path
-from sqlmodel import Session
 
 # Windows事件循环策略
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# 本地导入
-sys.path.append(str(Path(__file__).resolve().parents[3]))
-from dotenv import load_dotenv
-env_path = Path(__file__).resolve().parents[3] / ".env"
-load_dotenv(env_path)
-
-from app.agent.generateVideo.text2video import run_video_generation_workflow
+from app.agent.generateVideo.celery_config import celery_app
+from app.agent.generateVideo.service import (
+    resolve_db_uri,
+    update_redis_stage_status_sync,
+    save_characters_to_db,
+    save_shot_scripts_to_db,
+    update_character_three_view_in_db,
+    update_shot_grid_image_in_db,
+    update_shot_first_frame_image_in_db,
+    update_shot_last_frame_image_in_db,
+    update_shot_video_path_in_db,
+    save_scene_background_to_db,
+    copy_last_frame_as_first_frame,
+    get_prev_shot_in_scene_group,
+    resume_workflow_and_generate_three_view,
+    get_task_status,
+)
 from app.agent.utils.redis import (
     get_video_project_manager,
     ProjectStage,
     ProjectStatus,
     TaskStatus,
 )
-from app.core.db import engine
-from app.models import CharacterInfo, ShotScript, Script
+from app.agent.generateVideo.text2video import run_video_generation_workflow
 
-# 日志配置 - 使用Celery的日志系统，避免重复
 logger = logging.getLogger(__name__)
-# 不手动添加handler，让Celery自动处理日志配置
-
-
-# ============================================================================
-# Celery配置
-# ============================================================================
-
-class CeleryConfig:
-    """Celery配置类"""
-    CELERY_BROKER_URL="redis://:123456@localhost:6379/0"
-    CELERY_RESULT_BACKEND="redis://:123456@localhost:6379/0"
-
-# 创建Celery实例
-celery_app = Celery(
-    main="text2video_tasks",
-    broker=CeleryConfig.CELERY_BROKER_URL,
-    backend=CeleryConfig.CELERY_RESULT_BACKEND,
-)
-
-# 设置Celery配置参数
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="Asia/Shanghai",
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=3600,  # 1小时超时
-    task_soft_time_limit=3000,  # 50分钟软超时
-)
 
 
 # ============================================================================
@@ -81,54 +53,29 @@ def generate_video_workflow_task(
     db_uri: Optional[str] = None,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    异步执行文生视频工作流
-    
-    参数:
-    - script_id: 剧本ID
-    - script_name: 剧本名称
-    - script_content: 剧本内容
-    - user_id: 用户ID
-    - db_uri: 数据库连接字符串
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed，实现人物/场景一致性）
-    
-    返回:
-    - 工作流执行结果
-    """
-    # 修复：将 db_uri 的构建逻辑移到外部函数作用域
-    # 这样 run() 函数内部只读取 db_uri，不会因为赋值操作导致 UnboundLocalError
-    if not db_uri:
-        postgres_server = os.getenv("POSTGRES_SERVER", "localhost")
-        postgres_port = os.getenv("POSTGRES_PORT", "5432")
-        postgres_db = os.getenv("POSTGRES_DB", "app")
-        postgres_user = os.getenv("POSTGRES_USER", "postgres")
-        postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
-        db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
+    """异步执行文生视频工作流"""
+    db_uri = resolve_db_uri(db_uri)
 
     async def run():
         redis_manager = get_video_project_manager()
-        
+
         try:
-            # 更新项目状态为运行中
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
                 task_id=self.request.id,
             )
-            
-            # 创建角色提取任务
+
             char_task_id = await redis_manager.create_task(
                 project_id=script_id,
                 stage=ProjectStage.CHAR_DESC,
             )
-            
-            # 更新任务状态为运行中
+
             await redis_manager.update_task_state(
                 task_id=char_task_id,
                 status=TaskStatus.RUNNING,
             )
-            
-            # 运行工作流
+
             result = await run_video_generation_workflow(
                 script_id=script_id,
                 script_name=script_name,
@@ -137,11 +84,10 @@ def generate_video_workflow_task(
                 db_uri=db_uri,
                 save_characters_callback=save_characters_to_db,
                 save_shots_callback=save_shot_scripts_to_db,
-                redis_update_callback=update_redis_stage_status_sync,  # 使用同步版本
+                redis_update_callback=update_redis_stage_status_sync,
                 user_seed=user_seed,
             )
-            
-            # 检查是否有错误
+
             if result.get("error_message"):
                 await redis_manager.update_task_state(
                     task_id=char_task_id,
@@ -154,62 +100,53 @@ def generate_video_workflow_task(
                     error_message=result["error_message"],
                 )
                 return result
-            
-            # 更新角色提取任务状态为成功
+
             await redis_manager.update_task_state(
                 task_id=char_task_id,
                 status=TaskStatus.SUCCESS,
                 result_summary=f"提取了{len(result.get('characters', []))}个角色",
             )
-            
-            # 注意：角色信息和分镜脚本已经在工作流内部保存到数据库了
-            # 这里不需要再次保存
-            
-            # 创建分镜头脚本生成任务
+
             shot_task_id = await redis_manager.create_task(
                 project_id=script_id,
                 stage=ProjectStage.SHOTLIST_SCRIPT,
             )
-            
-            # 更新任务状态为运行中
+
             await redis_manager.update_task_state(
                 task_id=shot_task_id,
                 status=TaskStatus.RUNNING,
             )
-            
-            # 更新分镜头脚本任务状态为成功
+
             await redis_manager.update_task_state(
                 task_id=shot_task_id,
                 status=TaskStatus.SUCCESS,
                 result_summary=f"生成了{len(result.get('shot_scripts', []))}个分镜",
             )
-            
-            # 设置项目为等待审核状态
+
             await redis_manager.set_project_waiting_review(
                 project_id=script_id,
                 task_id=self.request.id,
                 message="角色信息和分镜头脚本已生成，请审核",
             )
-            
+
             logger.info(f"工作流执行成功，剧本ID: {script_id}")
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"工作流执行失败: {str(e)}")
-            
-            # 更新项目状态为失败
+
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.FAILED,
                 error_message=str(e),
             )
-            
+
             raise e
-            
+
         finally:
             await redis_manager.close()
-    
+
     return asyncio.run(run())
 
 
@@ -220,50 +157,39 @@ def confirm_characters_task(
     characters: list,
     user_id: str,
 ) -> Dict[str, Any]:
-    """
-    确认角色信息
-    
-    参数:
-    - script_id: 剧本ID
-    - characters: 角色信息列表
-    - user_id: 用户ID
-    
-    返回:
-    - 确认结果
-    """
+    """确认角色信息"""
     async def run():
         redis_manager = get_video_project_manager()
-        
+
         try:
-            # 更新项目状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
                 metadata={"characters_confirmed": True},
             )
-            
+
             logger.info(f"角色信息确认成功，剧本ID: {script_id}")
-            
+
             return {
                 "success": True,
                 "script_id": script_id,
                 "message": "角色信息确认成功",
             }
-            
+
         except Exception as e:
             logger.error(f"角色信息确认失败: {str(e)}")
-            
+
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.FAILED,
                 error_message=str(e),
             )
-            
+
             raise e
-            
+
         finally:
             await redis_manager.close()
-    
+
     return asyncio.run(run())
 
 
@@ -274,50 +200,39 @@ def confirm_shots_task(
     shot_scripts: list,
     user_id: str,
 ) -> Dict[str, Any]:
-    """
-    确认分镜头脚本
-    
-    参数:
-    - script_id: 剧本ID
-    - shot_scripts: 分镜头脚本列表
-    - user_id: 用户ID
-    
-    返回:
-    - 确认结果
-    """
+    """确认分镜头脚本"""
     async def run():
         redis_manager = get_video_project_manager()
-        
+
         try:
-            # 更新项目状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
                 metadata={"shots_confirmed": True},
             )
-            
+
             logger.info(f"分镜头脚本确认成功，剧本ID: {script_id}")
-            
+
             return {
                 "success": True,
                 "script_id": script_id,
                 "message": "分镜头脚本确认成功",
             }
-            
+
         except Exception as e:
             logger.error(f"分镜头脚本确认失败: {str(e)}")
-            
+
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.FAILED,
                 error_message=str(e),
             )
-            
+
             raise e
-            
+
         finally:
             await redis_manager.close()
-    
+
     return asyncio.run(run())
 
 
@@ -331,45 +246,22 @@ def resume_character_review_task(
     force_regenerate: bool = False,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    恢复角色审核工作流（HITL）或重新生成四视图
-
-    参数:
-    - script_id: 剧本ID
-    - character: 用户审核后的角色信息
-    - user_id: 用户ID
-    - db_uri: 数据库连接字符串
-    - force_regenerate: 是否强制重新生成四视图（即使已存在）
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed，实现人物/场景一致性）
-
-    返回:
-    - 恢复执行结果
-    """
-    # 构建数据库连接字符串（如果未提供）
-    if not db_uri:
-        postgres_server = os.getenv("POSTGRES_SERVER", "localhost")
-        postgres_port = os.getenv("POSTGRES_PORT", "5432")
-        postgres_db = os.getenv("POSTGRES_DB", "app")
-        postgres_user = os.getenv("POSTGRES_USER", "postgres")
-        postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
-        db_uri = f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
+    """恢复角色审核工作流（HITL）或重新生成四视图"""
+    db_uri = resolve_db_uri(db_uri)
 
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 检查项目是否存在，如果不存在则创建
             project_state = await redis_manager.get_project_state(script_id)
             if not project_state:
                 logger.warning(f"Redis中不存在项目状态，将创建新项目: project_id={script_id}")
-                # 创建项目状态
                 await redis_manager.create_project(
                     user_id=user_id,
                     project_id=script_id,
-                    metadata={"current_character": character}
+                    metadata={"current_character": character},
                 )
 
-            # 更新项目状态
             update_success = await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
@@ -381,7 +273,6 @@ def resume_character_review_task(
 
             logger.info(f"用户审核角色完成，准备恢复工作流，剧本ID: {script_id}, 强制重新生成: {force_regenerate}")
 
-            # 恢复LangGraph工作流并生成四视图
             result = await resume_workflow_and_generate_three_view(
                 script_id=script_id,
                 character=character,
@@ -391,7 +282,6 @@ def resume_character_review_task(
                 user_seed=user_seed,
             )
 
-            # 检查是否有错误
             if result.get("error_message"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -400,7 +290,6 @@ def resume_character_review_task(
                 )
                 return result
 
-            # 更新角色四视图路径到数据库
             three_view_image_path = result.get("three_view_image_path")
             if three_view_image_path:
                 update_success = update_character_three_view_in_db(
@@ -411,8 +300,6 @@ def resume_character_review_task(
                 if not update_success:
                     logger.warning(f"角色四视图路径更新到数据库失败")
 
-                # 更新Redis状态，标记四视图生成完成
-                # 注意：这里不需要改变阶段，只需要确保状态是WAITING_REVIEW
                 await redis_manager.update_project_state(
                     project_id=script_id,
                     status=ProjectStatus.WAITING_REVIEW,
@@ -446,435 +333,6 @@ def resume_character_review_task(
     return asyncio.run(run())
 
 
-# ============================================================================
-# Redis状态更新辅助函数
-# ============================================================================
-
-def update_redis_stage_status_sync(
-    script_id: str,
-    stage: str,
-    status: str
-) -> bool:
-    """
-    更新Redis中的阶段状态（同步版本）
-    
-    参数:
-    - script_id: 剧本ID
-    - stage: 阶段名称 ("char_desc" 或 "shotlist_script")
-    - status: 状态 ("completed")
-    
-    返回:
-    - 是否更新成功
-    """
-    async def _update():
-        redis_manager = get_video_project_manager()
-        
-        try:
-            # 根据阶段更新状态
-            if stage == "char_desc":
-                # 角色生成完成，更新阶段为SHOTLIST_SCRIPT
-                await redis_manager.update_project_state(
-                    project_id=script_id,
-                    status=ProjectStatus.RUNNING,
-                    metadata={"current_stage": ProjectStage.SHOTLIST_SCRIPT}
-                )
-                logger.info(f"已更新Redis状态：角色生成完成，进入分镜生成阶段")
-            elif stage == "shotlist_script":
-                # 分镜生成完成，更新状态为WAITING_REVIEW
-                # 注意：ProjectStage中没有WAITING_REVIEW，只有ProjectStatus有
-                await redis_manager.update_project_state(
-                    project_id=script_id,
-                    status=ProjectStatus.WAITING_REVIEW,
-                    # 不需要更新stage，保持为SHOTLIST_SCRIPT
-                )
-                logger.info(f"已更新Redis状态：分镜生成完成，等待审核")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"更新Redis阶段状态失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return False
-        finally:
-            await redis_manager.close()
-    
-    # 使用 asyncio.run() 在新的事件循环中运行
-    # 这是最简单和最可靠的方法
-    try:
-        return asyncio.run(_update())
-    except Exception as e:
-        logger.error(f"运行Redis更新失败: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-async def update_redis_stage_status(
-    script_id: str,
-    stage: str,
-    status: str
-) -> bool:
-    """
-    更新Redis中的阶段状态（异步版本）
-    
-    参数:
-    - script_id: 剧本ID
-    - stage: 阶段名称 ("char_desc" 或 "shotlist_script")
-    - status: 状态 ("completed")
-    
-    返回:
-    - 是否更新成功
-    """
-    redis_manager = get_video_project_manager()
-    
-    try:
-        # 根据阶段更新状态
-        if stage == "char_desc":
-            # 角色生成完成，更新阶段为SHOTLIST_SCRIPT
-            await redis_manager.update_project_state(
-                project_id=script_id,
-                status=ProjectStatus.RUNNING,
-                metadata={"current_stage": ProjectStage.SHOTLIST_SCRIPT}
-            )
-            logger.info(f"已更新Redis状态：角色生成完成，进入分镜生成阶段")
-        elif stage == "shotlist_script":
-            # 分镜生成完成，更新阶段为WAITING_REVIEW
-            await redis_manager.update_project_state(
-                project_id=script_id,
-                status=ProjectStatus.WAITING_REVIEW,
-                metadata={"current_stage": ProjectStage.WAITING_REVIEW}
-            )
-            logger.info(f"已更新Redis状态：分镜生成完成，等待审核")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"更新Redis阶段状态失败: {str(e)}")
-        return False
-    finally:
-        await redis_manager.close()
-
-
-# ============================================================================
-# 数据库操作辅助函数
-# ============================================================================
-
-def save_characters_to_db(script_id: str, characters: list) -> bool:
-    """
-    将角色信息保存到数据库
-    
-    参数:
-    - script_id: 剧本ID
-    - characters: 角色信息列表 [{"role_name": "xxx", "role_desc": "xxx"}, ...]
-    
-    返回:
-    - 是否保存成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-            
-            # 先删除该剧本之前的角色信息（软删除）
-            from sqlmodel import select
-            statement = select(CharacterInfo).where(CharacterInfo.script_id == script_uuid)
-            existing_chars = session.exec(statement).all()
-            for char in existing_chars:
-                char.is_deleted = 1
-                char.update_time = datetime.utcnow()
-                session.add(char)
-            
-            # 创建新的角色信息
-            for char_data in characters:
-                character = CharacterInfo(
-                    script_id=script_uuid,
-                    role_name=char_data.get("role_name", "未命名角色"),
-                    role_desc=char_data.get("role_desc", "暂无描述"),
-                    version=1,
-                    create_time=datetime.utcnow(),
-                    update_time=datetime.utcnow(),
-                    is_deleted=0
-                )
-                session.add(character)
-            
-            # 更新剧本状态为"角色已生成"
-            script = session.get(Script, script_uuid)
-            if script:
-                script.status = 1  # 1=characters generated
-                script.update_time = datetime.utcnow()
-                session.add(script)
-            
-            session.commit()
-            logger.info(f"成功保存{len(characters)}个角色信息到数据库，剧本ID: {script_id}")
-            return True
-            
-    except Exception as e:
-        logger.error(f"保存角色信息到数据库失败: {str(e)}")
-        return False
-
-
-def save_shot_scripts_to_db(script_id: str, shot_scripts: list) -> bool:
-    """
-    将分镜头脚本保存到数据库
-    
-    参数:
-    - script_id: 剧本ID
-    - shot_scripts: 分镜头脚本列表 [{"shot_no": 1, "total_script": "xxx"}, ...]
-    
-    返回:
-    - 是否保存成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-            
-            # 先删除该剧本之前的分镜头脚本（软删除）
-            from sqlmodel import select
-            statement = select(ShotScript).where(ShotScript.script_id == script_uuid)
-            existing_shots = session.exec(statement).all()
-            for shot in existing_shots:
-                shot.is_deleted = 1
-                shot.update_time = datetime.utcnow()
-                session.add(shot)
-            
-            # 创建新的分镜头脚本
-            for shot_data in shot_scripts:
-                shot_script = ShotScript(
-                    script_id=script_uuid,
-                    shot_no=shot_data.get("shot_no", 1),
-                    total_script=shot_data.get("total_script", ""),
-                    # 添加场景分组相关字段
-                    scene_group=shot_data.get("scene_group", 1),
-                    scene_name=shot_data.get("scene_name", "默认场景"),
-                    shot_group=shot_data.get("shot_group", 1),
-                    version=1,
-                    create_time=datetime.utcnow(),
-                    update_time=datetime.utcnow(),
-                    is_deleted=0
-                )
-                session.add(shot_script)
-            
-            # 更新剧本状态为"分镜头脚本已生成"
-            script = session.get(Script, script_uuid)
-            if script:
-                script.status = 2  # 2=storyboard generated
-                script.update_time = datetime.utcnow()
-                session.add(script)
-            
-            session.commit()
-            logger.info(f"成功保存{len(shot_scripts)}个分镜头脚本到数据库，剧本ID: {script_id}")
-            return True
-            
-    except Exception as e:
-        logger.error(f"保存分镜头脚本到数据库失败: {str(e)}")
-        return False
-
-
-# ============================================================================
-# 辅助函数
-# ============================================================================
-
-def start_video_generation(
-    script_id: str,
-    script_name: str,
-    script_content: str,
-    user_id: str,
-    db_uri: Optional[str] = None,
-    user_seed: Optional[int] = None,
-) -> str:
-    """
-    启动文生视频生成任务
-    
-    参数:
-    - script_id: 剧本ID
-    - script_name: 剧本名称
-    - script_content: 剧本内容
-    - user_id: 用户ID
-    - db_uri: 数据库连接字符串
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
-    
-    返回:
-    - 任务ID
-    """
-    task = generate_video_workflow_task.delay(
-        script_id=script_id,
-        script_name=script_name,
-        script_content=script_content,
-        user_id=user_id,
-        db_uri=db_uri,
-        user_seed=user_seed,
-    )
-    return task.id
-
-
-def get_task_status(task_id: str) -> Dict[str, Any]:
-    """
-    获取任务状态
-    
-    返回:
-    - 任务状态信息
-    """
-    task = celery_app.AsyncResult(task_id)
-    
-    return {
-        "task_id": task_id,
-        "status": task.status,
-        "result": task.result if task.ready() else None,
-        "error": str(task.result) if task.failed() else None,
-    }
-
-
-async def resume_workflow_and_generate_three_view(
-    script_id: str,
-    character: dict,
-    user_id: str,
-    db_uri: str,
-    force_regenerate: bool = False,
-    user_seed: Optional[int] = None,
-) -> Dict[str, Any]:
-    """
-    恢复LangGraph工作流并生成角色四视图
-
-    使用 LangGraph 官方 HITL API：
-    - 使用 Command(resume=...) 恢复中断的工作流
-    - Command 的 resume 参数会作为 interrupt() 的返回值
-
-    参数:
-    - script_id: 剧本ID
-    - character: 用户审核后的角色信息
-    - user_id: 用户ID
-    - db_uri: 数据库连接字符串
-    - force_regenerate: 是否强制重新生成四视图（即使已存在）
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
-
-    返回:
-    - 包含四视图路径的结果字典
-    """
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg_pool import AsyncConnectionPool
-    from langgraph.types import Command
-    from app.agent.generateVideo.text2video import (
-        build_video_generation_graph,
-        VideoGenerationState,
-    )
-    from app.agent.generatePic.llm_client import HelloAgentsLLM
-
-    pool = None
-
-    try:
-        # 初始化LLM客户端
-        llm_client = HelloAgentsLLM()
-
-        # 创建数据库连接池
-        pool = AsyncConnectionPool(
-            conninfo=db_uri,
-            min_size=5,
-            max_size=10,
-            kwargs={"autocommit": True, "prepare_threshold": 0}
-        )
-        await pool.open()
-
-        # 创建checkpointer
-        checkpointer = AsyncPostgresSaver(pool)
-        await checkpointer.setup()
-
-        # 构建工作流图
-        app = build_video_generation_graph(llm_client, checkpointer)
-
-        # 配置
-        config = {"configurable": {"thread_id": script_id}}
-
-        logger.info(f"准备恢复工作流，角色: {character.get('role_name', '未知')}, 强制重新生成: {force_regenerate}")
-
-        # 如果需要强制重新生成，在character中添加标记
-        if force_regenerate:
-            character_with_flag = {**character, "force_regenerate": True}
-        else:
-            character_with_flag = character
-
-        # 使用 LangGraph 官方 HITL API 恢复工作流
-        # Command(resume=character) 会将 character 作为 interrupt() 的返回值
-        result = await app.ainvoke(
-            Command(resume=character_with_flag),
-            config=config
-        )
-
-        # 提取四视图路径
-        three_view_image_path = None
-        if result and "character_three_views" in result:
-            three_views = result["character_three_views"]
-            # 查找当前角色的四视图
-            for view in three_views:
-                if view.get("role_name") == character.get("role_name"):
-                    three_view_image_path = view.get("three_view_image_path")
-                    break
-
-        logger.info(f"工作流恢复执行完成，四视图路径: {three_view_image_path}")
-
-        return {
-            "success": True,
-            "three_view_image_path": three_view_image_path,
-        }
-
-    except Exception as e:
-        logger.error(f"恢复工作流并生成四视图失败: {str(e)}")
-        return {
-            "error_message": str(e),
-        }
-
-    finally:
-        if pool:
-            await pool.close()
-
-
-def update_character_three_view_in_db(
-    script_id: str,
-    role_name: str,
-    three_view_image_path: str,
-) -> bool:
-    """
-    更新角色四视图路径到数据库
-    
-    参数:
-    - script_id: 剧本ID
-    - role_name: 角色名称
-    - three_view_image_path: 四视图图片路径
-    
-    返回:
-    - 是否更新成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-            
-            # 查找对应的角色
-            from sqlmodel import select
-            statement = select(CharacterInfo).where(
-                CharacterInfo.script_id == script_uuid,
-                CharacterInfo.role_name == role_name,
-                CharacterInfo.is_deleted == 0
-            )
-            character = session.exec(statement).first()
-            
-            if character:
-                character.three_view_image_path = three_view_image_path
-                character.update_time = datetime.utcnow()
-                session.add(character)
-                session.commit()
-                logger.info(f"成功更新角色 {role_name} 的四视图路径到数据库")
-                return True
-            else:
-                logger.warning(f"未找到角色 {role_name}，无法更新四视图路径")
-                return False
-                
-    except Exception as e:
-        logger.error(f"更新角色四视图路径到数据库失败: {str(e)}")
-        return False
-
-
 @celery_app.task(bind=True)
 def generate_scene_background_task(
     self,
@@ -885,25 +343,11 @@ def generate_scene_background_task(
     user_id: str,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    为指定场景组生成背景图
-
-    参数:
-    - script_id: 剧本ID
-    - scene_group_no: 场景组号
-    - scene_name: 场景名称
-    - shot_scripts: 该场景组下的所有分镜脚本
-    - user_id: 用户ID
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
-
-    返回:
-    - 生成结果
-    """
+    """为指定场景组生成背景图"""
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 更新项目状态为运行中（如果项目不存在则先创建）
             project_state = await redis_manager.get_project_state(script_id)
             if not project_state:
                 logger.warning(f"Redis中项目状态不存在，重新创建: project_id={script_id}")
@@ -919,22 +363,16 @@ def generate_scene_background_task(
 
             logger.info(f"开始为场景组{scene_group_no}生成背景图，剧本ID: {script_id}")
 
-            # 导入 SceneBackgroundAgent
-            from app.agent.generateVideo.text2video import SceneBackgroundAgent
+            from app.agent.generateVideo.scene_background_agent import SceneBackgroundAgent
             from app.agent.generatePic.llm_client import HelloAgentsLLM
             from app.agent.generateVideo.seed_manager import generate_global_seed
 
-            # 初始化LLM客户端
             llm_client = HelloAgentsLLM()
-
-            # 生成全局统一seed
             global_seed = generate_global_seed(script_id, user_seed)
             logger.info(f"场景背景图生成，全局seed: {global_seed}")
 
-            # 创建 SceneBackgroundAgent 实例
             background_agent = SceneBackgroundAgent(llm_client, script_id)
 
-            # 生成背景图
             result = background_agent.generate_background_for_scene_group(
                 scene_group_no=scene_group_no,
                 scene_name=scene_name,
@@ -943,7 +381,6 @@ def generate_scene_background_task(
                 global_seed=global_seed,
             )
 
-            # 检查是否有错误
             if result.get("error"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -952,18 +389,15 @@ def generate_scene_background_task(
                 )
                 return result
 
-            # 更新Redis状态（忽略失败，后续写入metadata时会确保项目存在）
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.WAITING_REVIEW,
             )
 
-            # 将背景图信息写入Redis metadata的scene_backgrounds列表
             background_image_path = result.get("background_image_path", "")
             if background_image_path:
                 project_state = await redis_manager.get_project_state(script_id)
                 if not project_state:
-                    # Redis中项目状态不存在（可能TTL过期），重新创建
                     logger.warning(f"Redis中项目状态不存在，重新创建: project_id={script_id}")
                     await redis_manager.create_project(
                         user_id=user_id,
@@ -972,13 +406,12 @@ def generate_scene_background_task(
                             "scene_group": scene_group_no,
                             "scene_name": scene_name,
                             "background_image_path": background_image_path,
-                        }]}
+                        }]},
                     )
                 else:
                     existing_backgrounds = []
                     if project_state.metadata:
                         existing_backgrounds = project_state.metadata.get("scene_backgrounds", [])
-                    # 检查是否已存在该场景组的背景图，如果存在则更新，否则追加
                     found = False
                     for bg in existing_backgrounds:
                         if bg.get("scene_group") == scene_group_no:
@@ -996,6 +429,13 @@ def generate_scene_background_task(
                         project_id=script_id,
                         metadata={"scene_backgrounds": existing_backgrounds},
                     )
+
+                save_scene_background_to_db(
+                    script_id=script_id,
+                    scene_group_no=scene_group_no,
+                    scene_name=scene_name,
+                    background_image_path=background_image_path,
+                )
 
             logger.info(f"场景组{scene_group_no}背景图生成完成，剧本ID: {script_id}")
 
@@ -1025,7 +465,6 @@ def generate_scene_background_task(
     return asyncio.run(run())
 
 
-
 @celery_app.task(bind=True)
 def generate_grid_image_task(
     self,
@@ -1036,25 +475,11 @@ def generate_grid_image_task(
     user_id: str,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    为指定分镜生成九宫格图片（异步Celery任务，调用GridImageAgent）
-
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - shot_script_text: 分镜脚本内容
-    - scene_group_no: 场景组号，用于匹配场景背景图
-    - user_id: 用户ID
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
-
-    返回:
-    - 生成结果
-    """
+    """为指定分镜生成九宫格图片"""
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 更新项目状态为运行中
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
@@ -1063,22 +488,16 @@ def generate_grid_image_task(
 
             logger.info(f"开始为分镜{shot_no}生成九宫格图片，剧本ID: {script_id}")
 
-            # 导入GridImageAgent和LLM客户端
-            from app.agent.generateVideo.text2video import GridImageAgent
+            from app.agent.generateVideo.grid_image_agent import GridImageAgent
             from app.agent.generatePic.llm_client import HelloAgentsLLM
             from app.agent.generateVideo.seed_manager import generate_global_seed
 
-            # 初始化LLM客户端
             llm_client = HelloAgentsLLM()
-
-            # 生成全局统一seed
             global_seed = generate_global_seed(script_id, user_seed)
             logger.info(f"九宫格图片生成，全局seed: {global_seed}")
 
-            # 创建GridImageAgent实例
             grid_agent = GridImageAgent(llm_client, script_id)
 
-            # 调用Agent生成九宫格图片
             result = grid_agent.generate_grid_image(
                 shot_no=shot_no,
                 shot_script_text=shot_script_text,
@@ -1087,7 +506,6 @@ def generate_grid_image_task(
                 global_seed=global_seed,
             )
 
-            # 检查是否有错误
             if result.get("error"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -1096,7 +514,6 @@ def generate_grid_image_task(
                 )
                 return result
 
-            # 更新数据库中的grid_image_path
             grid_image_path = result.get("grid_image_path", "")
             if grid_image_path:
                 update_success = update_shot_grid_image_in_db(
@@ -1107,7 +524,6 @@ def generate_grid_image_task(
                 if not update_success:
                     logger.warning(f"九宫格图片路径更新到数据库失败")
 
-            # 更新Redis状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.WAITING_REVIEW,
@@ -1140,52 +556,6 @@ def generate_grid_image_task(
     return asyncio.run(run())
 
 
-def update_shot_grid_image_in_db(
-    script_id: str,
-    shot_no: int,
-    grid_image_path: str,
-) -> bool:
-    """
-    更新分镜九宫格图片路径到数据库
-    
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - grid_image_path: 九宫格图片路径
-    
-    返回:
-    - 是否更新成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-            
-            # 查找对应的分镜
-            from sqlmodel import select
-            statement = select(ShotScript).where(
-                ShotScript.script_id == script_uuid,
-                ShotScript.shot_no == shot_no,
-                ShotScript.is_deleted == 0
-            )
-            shot = session.exec(statement).first()
-            
-            if shot:
-                shot.grid_image_path = grid_image_path
-                shot.update_time = datetime.utcnow()
-                session.add(shot)
-                session.commit()
-                logger.info(f"成功更新分镜{shot_no}的九宫格图片路径到数据库")
-                return True
-            else:
-                logger.warning(f"未找到分镜{shot_no}，无法更新九宫格图片路径")
-                return False
-                
-    except Exception as e:
-        logger.error(f"更新分镜九宫格图片路径到数据库失败: {str(e)}")
-        return False
-
-
 @celery_app.task(bind=True)
 def generate_first_frame_image_task(
     self,
@@ -1197,26 +567,11 @@ def generate_first_frame_image_task(
     user_id: str,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    为指定分镜生成首帧图（异步Celery任务，调用FirstFrameAgent）
-
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - shot_script_text: 分镜脚本内容
-    - scene_group_no: 场景组号，用于匹配场景背景图
-    - script_name: 剧本名称
-    - user_id: 用户ID
-    - user_seed: 用户指定的seed（可选，用于覆盖自动生成的seed）
-
-    返回:
-    - 生成结果
-    """
+    """为指定分镜生成首帧图"""
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 更新项目状态为运行中
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
@@ -1225,22 +580,16 @@ def generate_first_frame_image_task(
 
             logger.info(f"开始为分镜{shot_no}生成首帧图，剧本ID: {script_id}")
 
-            # 导入FirstFrameAgent和LLM客户端
-            from app.agent.generateVideo.text2video import FirstFrameAgent
+            from app.agent.generateVideo.first_and_last_frame_agent import FirstAndLastFrameAgent
             from app.agent.generatePic.llm_client import HelloAgentsLLM
             from app.agent.generateVideo.seed_manager import generate_global_seed
 
-            # 初始化LLM客户端
             llm_client = HelloAgentsLLM()
-
-            # 生成全局统一seed
             global_seed = generate_global_seed(script_id, user_seed)
             logger.info(f"首帧图生成，全局seed: {global_seed}")
 
-            # 创建FirstFrameAgent实例
-            first_frame_agent = FirstFrameAgent(llm_client, script_id)
+            first_frame_agent = FirstAndLastFrameAgent(llm_client, script_id)
 
-            # 调用Agent生成首帧图
             result = first_frame_agent.generate_first_frame_image(
                 shot_no=shot_no,
                 shot_script_text=shot_script_text,
@@ -1250,7 +599,6 @@ def generate_first_frame_image_task(
                 global_seed=global_seed,
             )
 
-            # 检查是否有错误
             if result.get("error"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -1259,7 +607,6 @@ def generate_first_frame_image_task(
                 )
                 return result
 
-            # 更新数据库中的first_frame_image_path
             first_frame_image_path = result.get("first_frame_image_path", "")
             if first_frame_image_path:
                 update_success = update_shot_first_frame_image_in_db(
@@ -1270,7 +617,6 @@ def generate_first_frame_image_task(
                 if not update_success:
                     logger.warning(f"首帧图路径更新到数据库失败")
 
-            # 更新Redis状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.WAITING_REVIEW,
@@ -1303,50 +649,142 @@ def generate_first_frame_image_task(
     return asyncio.run(run())
 
 
-def update_shot_first_frame_image_in_db(
+@celery_app.task(bind=True)
+def generate_first_and_last_frame_task(
+    self,
     script_id: str,
     shot_no: int,
-    first_frame_image_path: str,
-) -> bool:
-    """
-    更新分镜首帧图路径到数据库
-    
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - first_frame_image_path: 首帧图路径
-    
-    返回:
-    - 是否更新成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-            
-            # 查找对应的分镜
-            from sqlmodel import select
-            statement = select(ShotScript).where(
-                ShotScript.script_id == script_uuid,
-                ShotScript.shot_no == shot_no,
-                ShotScript.is_deleted == 0
+    shot_script_text: str,
+    scene_group_no: int,
+    script_name: str,
+    user_id: str,
+    is_first_in_scene_group: bool,
+    user_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """为指定分镜生成首帧图和尾帧图"""
+    async def run():
+        redis_manager = get_video_project_manager()
+
+        try:
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.RUNNING,
+                task_id=self.request.id,
             )
-            shot = session.exec(statement).first()
-            
-            if shot:
-                shot.first_frame_image_path = first_frame_image_path
-                shot.update_time = datetime.utcnow()
-                session.add(shot)
-                session.commit()
-                logger.info(f"成功更新分镜{shot_no}的首帧图路径到数据库")
-                return True
+
+            logger.info(f"开始为分镜{shot_no}生成首帧+尾帧图，剧本ID: {script_id}")
+
+            from app.agent.generateVideo.first_and_last_frame_agent import FirstAndLastFrameAgent
+            from app.agent.generatePic.llm_client import HelloAgentsLLM
+            from app.agent.generateVideo.seed_manager import generate_global_seed
+
+            llm_client = HelloAgentsLLM()
+            global_seed = generate_global_seed(script_id, user_seed)
+            logger.info(f"首帧+尾帧生成，全局seed: {global_seed}")
+
+            agent = FirstAndLastFrameAgent(llm_client, script_id)
+
+            first_frame_image_path = ""
+
+            if is_first_in_scene_group:
+                ff_result = agent.generate_first_frame_image(
+                    shot_no=shot_no,
+                    shot_script_text=shot_script_text,
+                    scene_group_no=scene_group_no,
+                    script_id=script_id,
+                    script_name=script_name,
+                    global_seed=global_seed,
+                )
+                if ff_result.get("error"):
+                    await redis_manager.update_project_state(
+                        project_id=script_id,
+                        status=ProjectStatus.FAILED,
+                        error_message=ff_result["error"],
+                    )
+                    return ff_result
+                first_frame_image_path = ff_result.get("first_frame_image_path", "")
             else:
-                logger.warning(f"未找到分镜{shot_no}，无法更新首帧图路径")
-                return False
-                
-    except Exception as e:
-        logger.error(f"更新分镜首帧图路径到数据库失败: {str(e)}")
-        return False
+                prev_shot = get_prev_shot_in_scene_group(
+                    script_id=script_id,
+                    scene_group_no=scene_group_no,
+                    shot_no=shot_no,
+                )
+
+                if prev_shot:
+                    first_frame_image_path = copy_last_frame_as_first_frame(
+                        script_id=script_id,
+                        prev_shot_no=prev_shot.shot_no,
+                        current_shot_no=shot_no,
+                        scene_group_no=scene_group_no,
+                        script_name=script_name,
+                    )
+                else:
+                    logger.warning(f"未找到场景组{scene_group_no}中分镜{shot_no}的上一条分镜，回退为生成首帧图")
+                    ff_result = agent.generate_first_frame_image(
+                        shot_no=shot_no,
+                        shot_script_text=shot_script_text,
+                        scene_group_no=scene_group_no,
+                        script_id=script_id,
+                        script_name=script_name,
+                        global_seed=global_seed,
+                    )
+                    first_frame_image_path = ff_result.get("first_frame_image_path", "")
+
+            if first_frame_image_path:
+                update_shot_first_frame_image_in_db(
+                    script_id=script_id,
+                    shot_no=shot_no,
+                    first_frame_image_path=first_frame_image_path,
+                )
+
+            lf_result = agent.generate_last_frame_image(
+                shot_no=shot_no,
+                shot_script_text=shot_script_text,
+                scene_group_no=scene_group_no,
+                script_id=script_id,
+                script_name=script_name,
+                first_frame_image_path=first_frame_image_path,
+                global_seed=global_seed,
+            )
+
+            last_frame_image_path = lf_result.get("last_frame_image_path", "")
+
+            if last_frame_image_path:
+                update_shot_last_frame_image_in_db(
+                    script_id=script_id,
+                    shot_no=shot_no,
+                    last_frame_image_path=last_frame_image_path,
+                )
+
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.WAITING_REVIEW,
+            )
+
+            logger.info(f"分镜{shot_no}首帧+尾帧图生成完成，剧本ID: {script_id}")
+
+            return {
+                "success": True,
+                "script_id": script_id,
+                "shot_no": shot_no,
+                "first_frame_image_path": first_frame_image_path,
+                "last_frame_image_path": last_frame_image_path,
+                "message": f"分镜{shot_no}首帧+尾帧图生成完成",
+            }
+
+        except Exception as e:
+            logger.error(f"首帧+尾帧图生成失败: {str(e)}")
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.FAILED,
+                error_message=str(e),
+            )
+            raise e
+
+        finally:
+            await redis_manager.close()
+
+    return asyncio.run(run())
 
 
 @celery_app.task(bind=True)
@@ -1359,25 +797,11 @@ def generate_video_task(
     user_id: str,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    为指定分镜生成视频（异步Celery任务，调用VideoGenerationAgent）
-
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - shotlist_text: 分镜头脚本内容
-    - script_name: 剧本名称
-    - user_id: 用户ID
-    - user_seed: 用户指定的seed（可选）
-
-    返回:
-    - 生成结果
-    """
+    """为指定分镜生成视频"""
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 更新项目状态为运行中
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
@@ -1386,22 +810,16 @@ def generate_video_task(
 
             logger.info(f"开始为分镜{shot_no}生成视频，剧本ID: {script_id}")
 
-            # 导入VideoGenerationAgent和LLM客户端
-            from app.agent.generateVideo.text2video import VideoGenerationAgent
+            from app.agent.generateVideo.video_generation_agent import VideoGenerationAgent
             from app.agent.generatePic.llm_client import HelloAgentsLLM
             from app.agent.generateVideo.seed_manager import generate_global_seed
 
-            # 初始化LLM客户端
             llm_client = HelloAgentsLLM()
-
-            # 生成全局统一seed
             global_seed = generate_global_seed(script_id, user_seed)
             logger.info(f"视频生成，全局seed: {global_seed}")
 
-            # 创建VideoGenerationAgent实例
             video_agent = VideoGenerationAgent(llm_client, script_id)
 
-            # 调用Agent生成视频
             result = video_agent.generate_video(
                 shot_no=shot_no,
                 shotlist_text=shotlist_text,
@@ -1410,7 +828,6 @@ def generate_video_task(
                 global_seed=global_seed,
             )
 
-            # 检查是否有错误
             if result.get("error"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -1419,7 +836,6 @@ def generate_video_task(
                 )
                 return result
 
-            # 更新数据库中的video_path
             video_path = result.get("video_path", "")
             if video_path:
                 update_success = update_shot_video_path_in_db(
@@ -1430,7 +846,6 @@ def generate_video_task(
                 if not update_success:
                     logger.warning(f"视频路径更新到数据库失败")
 
-            # 更新Redis状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.WAITING_REVIEW,
@@ -1473,26 +888,11 @@ def generate_video_from_first_frame_task(
     user_id: str,
     user_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    基于首帧图生成视频（异步Celery任务，调用VideoGenerationAgent.generate_video_from_first_frame）
-    使用doubao-seedance-1-0-pro-250528模型
-
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - shotlist_text: 分镜头脚本内容
-    - script_name: 剧本名称
-    - user_id: 用户ID
-    - user_seed: 用户指定的seed（可选）
-
-    返回:
-    - 生成结果
-    """
+    """基于首帧图生成视频（seedance模型）"""
     async def run():
         redis_manager = get_video_project_manager()
 
         try:
-            # 更新项目状态为运行中
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.RUNNING,
@@ -1501,22 +901,16 @@ def generate_video_from_first_frame_task(
 
             logger.info(f"开始为分镜{shot_no}基于首帧图生成视频（seedance），剧本ID: {script_id}")
 
-            # 导入VideoGenerationAgent和LLM客户端
-            from app.agent.generateVideo.text2video import VideoGenerationAgent
+            from app.agent.generateVideo.video_generation_agent import VideoGenerationAgent
             from app.agent.generatePic.llm_client import HelloAgentsLLM
             from app.agent.generateVideo.seed_manager import generate_global_seed
 
-            # 初始化LLM客户端
             llm_client = HelloAgentsLLM()
-
-            # 生成全局统一seed
             global_seed = generate_global_seed(script_id, user_seed)
             logger.info(f"seedance视频生成，全局seed: {global_seed}")
 
-            # 创建VideoGenerationAgent实例
             video_agent = VideoGenerationAgent(llm_client, script_id)
 
-            # 调用Agent基于首帧图生成视频
             result = video_agent.generate_video_from_first_frame(
                 shot_no=shot_no,
                 shotlist_text=shotlist_text,
@@ -1525,7 +919,6 @@ def generate_video_from_first_frame_task(
                 global_seed=global_seed,
             )
 
-            # 检查是否有错误
             if result.get("error"):
                 await redis_manager.update_project_state(
                     project_id=script_id,
@@ -1534,7 +927,6 @@ def generate_video_from_first_frame_task(
                 )
                 return result
 
-            # 更新数据库中的video_path
             video_path = result.get("video_path", "")
             if video_path:
                 update_success = update_shot_video_path_in_db(
@@ -1545,7 +937,6 @@ def generate_video_from_first_frame_task(
                 if not update_success:
                     logger.warning(f"seedance视频路径更新到数据库失败")
 
-            # 更新Redis状态
             await redis_manager.update_project_state(
                 project_id=script_id,
                 status=ProjectStatus.WAITING_REVIEW,
@@ -1578,47 +969,116 @@ def generate_video_from_first_frame_task(
     return asyncio.run(run())
 
 
-def update_shot_video_path_in_db(
+@celery_app.task(bind=True)
+def generate_video_from_first_and_last_frame_task(
+    self,
     script_id: str,
     shot_no: int,
-    video_path: str,
-) -> bool:
-    """
-    更新分镜视频路径到数据库
+    shotlist_text: str,
+    script_name: str,
+    user_id: str,
+    user_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """基于首尾帧图生成视频（seedance模型）"""
+    async def run():
+        redis_manager = get_video_project_manager()
 
-    参数:
-    - script_id: 剧本ID
-    - shot_no: 分镜号
-    - video_path: 视频路径
-
-    返回:
-    - 是否更新成功
-    """
-    try:
-        with Session(engine) as session:
-            # 将script_id转换为UUID
-            script_uuid = uuid.UUID(script_id)
-
-            # 查找对应的分镜
-            from sqlmodel import select
-            statement = select(ShotScript).where(
-                ShotScript.script_id == script_uuid,
-                ShotScript.shot_no == shot_no,
-                ShotScript.is_deleted == 0
+        try:
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.RUNNING,
+                task_id=self.request.id,
             )
-            shot = session.exec(statement).first()
 
-            if shot:
-                shot.video_path = video_path
-                shot.update_time = datetime.utcnow()
-                session.add(shot)
-                session.commit()
-                logger.info(f"成功更新分镜{shot_no}的视频路径到数据库")
-                return True
-            else:
-                logger.warning(f"未找到分镜{shot_no}，无法更新视频路径")
-                return False
+            logger.info(f"开始为分镜{shot_no}基于首尾帧生成视频（seedance），剧本ID: {script_id}")
 
-    except Exception as e:
-        logger.error(f"更新分镜视频路径到数据库失败: {str(e)}")
-        return False
+            from app.agent.generateVideo.video_generation_agent import VideoGenerationAgent
+            from app.agent.generatePic.llm_client import HelloAgentsLLM
+            from app.agent.generateVideo.seed_manager import generate_global_seed
+
+            llm_client = HelloAgentsLLM()
+            global_seed = generate_global_seed(script_id, user_seed)
+            logger.info(f"seedance首尾帧视频生成，全局seed: {global_seed}")
+
+            video_agent = VideoGenerationAgent(llm_client, script_id)
+
+            result = video_agent.generate_video_from_first_and_last_frame(
+                shot_no=shot_no,
+                shotlist_text=shotlist_text,
+                script_id=script_id,
+                script_name=script_name,
+                global_seed=global_seed,
+            )
+
+            if result.get("error"):
+                await redis_manager.update_project_state(
+                    project_id=script_id,
+                    status=ProjectStatus.FAILED,
+                    error_message=result["error"],
+                )
+                return result
+
+            video_path = result.get("video_path", "")
+            if video_path:
+                update_success = update_shot_video_path_in_db(
+                    script_id=script_id,
+                    shot_no=shot_no,
+                    video_path=video_path,
+                )
+                if not update_success:
+                    logger.warning(f"seedance首尾帧视频路径更新到数据库失败")
+
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.WAITING_REVIEW,
+            )
+
+            logger.info(f"分镜{shot_no}seedance首尾帧视频生成完成，剧本ID: {script_id}")
+
+            return {
+                "success": True,
+                "script_id": script_id,
+                "shot_no": shot_no,
+                "video_path": video_path,
+                "message": f"分镜{shot_no}seedance首尾帧视频生成完成",
+            }
+
+        except Exception as e:
+            logger.error(f"seedance首尾帧视频生成失败: {str(e)}")
+
+            await redis_manager.update_project_state(
+                project_id=script_id,
+                status=ProjectStatus.FAILED,
+                error_message=str(e),
+            )
+
+            raise e
+
+        finally:
+            await redis_manager.close()
+
+    return asyncio.run(run())
+
+
+# ============================================================================
+# 便捷启动函数（供 API 层调用）
+# ============================================================================
+
+def start_video_generation(
+    script_id: str,
+    script_name: str,
+    script_content: str,
+    user_id: str,
+    db_uri: Optional[str] = None,
+    user_seed: Optional[int] = None,
+) -> str:
+    """启动文生视频生成任务，返回任务ID"""
+    task = generate_video_workflow_task.delay(
+        script_id=script_id,
+        script_name=script_name,
+        script_content=script_content,
+        user_id=user_id,
+        db_uri=db_uri,
+        user_seed=user_seed,
+    )
+    return task.id

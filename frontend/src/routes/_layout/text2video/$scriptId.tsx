@@ -1,21 +1,19 @@
-import { useState, useEffect, useRef } from "react"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
-import { useQuery, useMutation } from "@tanstack/react-query"
 import {
-  Video,
-  Sparkles,
-  Loader2,
-  Check,
   AlertCircle,
-  Users,
-  Film,
-  X,
   AlertTriangle,
+  Check,
+  Film,
+  Loader2,
+  Sparkles,
+  Users,
+  Video,
+  X,
 } from "lucide-react"
-
+import { useEffect, useRef, useState } from "react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Card,
   CardContent,
@@ -23,15 +21,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import {
   Dialog,
   DialogContent,
@@ -40,10 +29,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
-  TooltipTrigger,
   TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip"
 
 // 类型定义
@@ -58,12 +57,13 @@ interface ShotScript {
   id: string
   shot_no: number
   total_script: string
-  scene_group: number  // 场景组号
-  scene_name: string   // 场景名称
-  shot_group: number   // 分镜头组号
-  grid_image_path?: string | null  // 九宫格图片路径
-  first_frame_image_path?: string | null  // 首帧图路径
-  video_path?: string | null  // 视频路径
+  scene_group: number // 场景组号
+  scene_name: string // 场景名称
+  shot_group: number // 分镜头组号
+  grid_image_path?: string | null // 九宫格图片路径
+  first_frame_image_path?: string | null // 首帧图路径
+  last_frame_image_path?: string | null // 尾帧图路径
+  video_path?: string | null // 视频路径
 }
 
 interface SceneBackground {
@@ -118,26 +118,29 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 // 修改：支持按 script_id 区分的路径
 // 例如：D:\...\{script_id}\generated_images\叶玉华_three_view_20260401_095133.png
 // 转換為：http://127.0.0.1:8000/static/{script_id}/generated_images/叶玉华_three_view_20260401_095133.png
-function convertImagePathToUrl(imagePath: string | null | undefined, scriptId?: string): string | null {
+function convertImagePathToUrl(
+  imagePath: string | null | undefined,
+  scriptId?: string,
+): string | null {
   if (!imagePath) return null
 
   // 从完整路径中提取 script_id 和文件名
   // 路径格式：D:\...\{script_id}\generated_images\{filename}
   const pathParts = imagePath.split(/[/\\]/)
-  
+
   // 查找 generated_images 目录的位置
-  const generatedImagesIndex = pathParts.findIndex(part => part === "generated_images")
-  
+  const generatedImagesIndex = pathParts.indexOf("generated_images")
+
   if (generatedImagesIndex > 0) {
     // script_id 应该在 generated_images 的前一个位置
     const extractedScriptId = pathParts[generatedImagesIndex - 1]
     const fileName = pathParts[pathParts.length - 1]
-    
+
     if (extractedScriptId && fileName) {
       return `${API_BASE_URL}/static/${extractedScriptId}/generated_images/${fileName}`
     }
   }
-  
+
   // 兜底：如果路径格式不匹配，尝试使用传入的 scriptId
   const fileName = pathParts[pathParts.length - 1]
   if (fileName && scriptId) {
@@ -148,15 +151,20 @@ function convertImagePathToUrl(imagePath: string | null | undefined, scriptId?: 
 }
 
 // 1. 获取剧本状态API
-async function getScriptStatus(scriptId: string): Promise<ScriptStatusResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+async function getScriptStatus(
+  scriptId: string,
+): Promise<ScriptStatusResponse> {
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/script-status/${scriptId}`, {
-    headers: {
-      "Authorization": `Bearer ${token}` // 添加认证头部
-    }
-  })
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/script-status/${scriptId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`, // 添加认证头部
+      },
+    },
+  )
   if (!response.ok) {
     throw new Error(`获取剧本状态失败: ${response.statusText}`)
   }
@@ -169,23 +177,28 @@ async function updateSingleCharacter(
   roleName: string,
   roleDesc: string,
 ): Promise<SingleCharacterResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/character/${characterId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/character/${characterId}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        role_name: roleName,
+        role_desc: roleDesc,
+      }),
     },
-    body: JSON.stringify({ 
-      role_name: roleName,
-      role_desc: roleDesc 
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `更新角色信息失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `更新角色信息失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -195,17 +208,20 @@ async function updateShots(
   scriptId: string,
   shotScripts: ShotScript[],
 ): Promise<UpdateShotsResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/update-shots/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}` // 添加认证头部
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/update-shots/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`, // 添加认证头部
+      },
+      body: JSON.stringify({ shot_scripts: shotScripts }),
     },
-    body: JSON.stringify({ shot_scripts: shotScripts }),
-  })
+  )
   if (!response.ok) {
     throw new Error(`更新分镜头脚本失败: ${response.statusText}`)
   }
@@ -217,20 +233,25 @@ async function updateSingleShot(
   shotId: string,
   totalScript: string,
 ): Promise<UpdateSingleShotResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/shot/${shotId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/shot/${shotId}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ total_script: totalScript }),
     },
-    body: JSON.stringify({ total_script: totalScript }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `更新分镜头脚本失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `更新分镜头脚本失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -239,20 +260,25 @@ async function updateSingleShot(
 async function confirmCharacterThreeView(
   characterId: string,
 ): Promise<ConfirmThreeViewResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/confirm-character-three-view`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/confirm-character-three-view`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ character_id: characterId }),
     },
-    body: JSON.stringify({ character_id: characterId }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `确认角色四视图失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `确认角色四视图失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -273,24 +299,29 @@ async function generateSceneBackground(
   sceneName: string,
   shotScripts: ShotScript[],
 ): Promise<GenerateBackgroundResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-background/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-background/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        scene_group_no: sceneGroupNo,
+        scene_name: sceneName,
+        shot_scripts: shotScripts,
+      }),
     },
-    body: JSON.stringify({
-      scene_group_no: sceneGroupNo,
-      scene_name: sceneName,
-      shot_scripts: shotScripts,
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `生成背景图失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `生成背景图失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -310,24 +341,29 @@ async function generateGridImage(
   shotScriptText: string,
   sceneGroupNo: number,
 ): Promise<GenerateGridImageResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-grid-image/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-grid-image/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        shot_no: shotNo,
+        shot_script_text: shotScriptText,
+        scene_group_no: sceneGroupNo,
+      }),
     },
-    body: JSON.stringify({
-      shot_no: shotNo,
-      shot_script_text: shotScriptText,
-      scene_group_no: sceneGroupNo,
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `生成九宫格图片失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `生成九宫格图片失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -341,32 +377,84 @@ interface GenerateFirstFrameImageResponse {
   message: string
 }
 
-async function generateFirstFrameImage(
+async function _generateFirstFrameImage(
   scriptId: string,
   shotNo: number,
   shotScriptText: string,
   sceneGroupNo: number,
   scriptName: string,
 ): Promise<GenerateFirstFrameImageResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-first-frame-image/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-first-frame-image/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        shot_no: shotNo,
+        shot_script_text: shotScriptText,
+        scene_group_no: sceneGroupNo,
+        script_name: scriptName,
+      }),
     },
-    body: JSON.stringify({
-      shot_no: shotNo,
-      shot_script_text: shotScriptText,
-      scene_group_no: sceneGroupNo,
-      script_name: scriptName,
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `生成首帧图失败: ${response.statusText}`)
+    throw new Error(
+      errorData.detail || `生成首帧图失败: ${response.statusText}`,
+    )
+  }
+  return response.json()
+}
+
+// 6.6 生成首帧图+尾帧图API
+interface GenerateFirstAndLastFrameResponse {
+  success: boolean
+  script_id: string
+  shot_no: number
+  first_frame_image_path: string
+  last_frame_image_path: string
+  message: string
+}
+
+async function generateFirstAndLastFrame(
+  scriptId: string,
+  shotNo: number,
+  shotScriptText: string,
+  sceneGroupNo: number,
+  scriptName: string,
+  isFirstInSceneGroup: boolean,
+): Promise<GenerateFirstAndLastFrameResponse> {
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-first-and-last-frame/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        shot_no: shotNo,
+        shot_script_text: shotScriptText,
+        scene_group_no: sceneGroupNo,
+        script_name: scriptName,
+        is_first_in_scene_group: isFirstInSceneGroup,
+      }),
+    },
+  )
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(
+      errorData.detail || `生成首帧+尾帧图失败: ${response.statusText}`,
+    )
   }
   return response.json()
 }
@@ -380,25 +468,28 @@ interface GenerateVideoResponse {
   message: string
 }
 
-async function generateVideo(
+async function _generateVideo(
   scriptId: string,
   shotNo: number,
   shotlistText: string,
 ): Promise<GenerateVideoResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-video/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-video/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        shot_no: shotNo,
+        shotlist_text: shotlistText,
+      }),
     },
-    body: JSON.stringify({
-      shot_no: shotNo,
-      shotlist_text: shotlistText,
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.detail || `生成视频失败: ${response.statusText}`)
@@ -406,7 +497,7 @@ async function generateVideo(
   return response.json()
 }
 
-// 7.5 基于首帧图生成视频API（seedance模型）
+// 7.5 基于首尾帧图生成视频API（seedance模型）
 interface GenerateVideoFromFirstFrameResponse {
   success: boolean
   script_id: string
@@ -415,25 +506,28 @@ interface GenerateVideoFromFirstFrameResponse {
   message: string
 }
 
-async function generateVideoFromFirstFrame(
+async function generateVideoFromFirstAndLastFrame(
   scriptId: string,
   shotNo: number,
   shotlistText: string,
 ): Promise<GenerateVideoFromFirstFrameResponse> {
-  const token = localStorage.getItem("access_token");
-  if (!token) throw new Error("用户未登录");
+  const token = localStorage.getItem("access_token")
+  if (!token) throw new Error("用户未登录")
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2video/generate-video-from-first-frame/${scriptId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2video/generate-video-from-first-and-last-frame/${scriptId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        shot_no: shotNo,
+        shotlist_text: shotlistText,
+      }),
     },
-    body: JSON.stringify({
-      shot_no: shotNo,
-      shotlist_text: shotlistText,
-    }),
-  })
+  )
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.detail || `生成视频失败: ${response.statusText}`)
@@ -456,7 +550,7 @@ export const Route = createFileRoute("/_layout/text2video/$scriptId")({
 function ImagePreviewModal({
   imagePath,
   scriptId,
-  onClose
+  onClose,
 }: {
   imagePath: string
   scriptId: string
@@ -497,72 +591,115 @@ function ScriptDetail() {
   const { scriptId } = Route.useParams()
 
   // 状态
-  const [editableCharacters, setEditableCharacters] = useState<CharacterInfo[]>([])
+  const [editableCharacters, setEditableCharacters] = useState<CharacterInfo[]>(
+    [],
+  )
   const [editableShots, setEditableShots] = useState<ShotScript[]>([])
-  const [originalCharacters, setOriginalCharacters] = useState<CharacterInfo[]>([]) // 原始角色数据
-  const [originalShots, setOriginalShots] = useState<ShotScript[]>([]) // 原始分镜数据
+  const [_originalCharacters, setOriginalCharacters] = useState<
+    CharacterInfo[]
+  >([]) // 原始角色数据
+  const [_originalShots, setOriginalShots] = useState<ShotScript[]>([]) // 原始分镜数据
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
-  const [updatingCharacterId, setUpdatingCharacterId] = useState<string | null>(null)
-  const [confirmingCharacterId, setConfirmingCharacterId] = useState<string | null>(null)
+  const [updatingCharacterId, setUpdatingCharacterId] = useState<string | null>(
+    null,
+  )
+  const [confirmingCharacterId, setConfirmingCharacterId] = useState<
+    string | null
+  >(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
-  const [generatingBackgroundScene, setGeneratingBackgroundScene] = useState<number | null>(null) // 正在生成背景图的场景组号
-  const [sceneBackgrounds, setSceneBackgrounds] = useState<Map<number, string>>(new Map()) // 场景组号 -> 背景图路径
+  const [previewFrames, setPreviewFrames] = useState<string[] | null>(null)
+  const [generatingBackgroundScene, setGeneratingBackgroundScene] = useState<
+    number | null
+  >(null) // 正在生成背景图的场景组号
+  const [sceneBackgrounds, setSceneBackgrounds] = useState<Map<number, string>>(
+    new Map(),
+  ) // 场景组号 -> 背景图路径
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false) // 确认对话框是否打开
-  const [pendingSceneGroup, setPendingSceneGroup] = useState<{ sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[] } | null>(null) // 待确认的场景组信息
-  const [generatingGridShot, setGeneratingGridShot] = useState<number | null>(null) // 正在生成九宫格图片的分镜号
-  const [generatingVideoShot, setGeneratingVideoShot] = useState<number | null>(null) // 正在生成视频的分镜号
-  const [generatingThreeViewCharacterIds, setGeneratingThreeViewCharacterIds] = useState<Set<string>>(new Set()) // 正在生成四视图的角色ID集合
+  const [pendingSceneGroup, setPendingSceneGroup] = useState<{
+    sceneGroupNo: number
+    sceneName: string
+    sceneShots: ShotScript[]
+  } | null>(null) // 待确认的场景组信息
+  const [generatingGridShot, setGeneratingGridShot] = useState<number | null>(
+    null,
+  ) // 正在生成九宫格图片的分镜号
+  const [generatingVideoShot, setGeneratingVideoShot] = useState<number | null>(
+    null,
+  ) // 正在生成视频的分镜号
+  const [generatingThreeViewCharacterIds, setGeneratingThreeViewCharacterIds] =
+    useState<Set<string>>(new Set()) // 正在生成四视图的角色ID集合
   const [videoConfirmDialogOpen, setVideoConfirmDialogOpen] = useState(false) // 视频生成确认对话框是否打开
-  const [pendingVideoShot, setPendingVideoShot] = useState<{ shotNo: number; shotId: string; totalScript: string } | null>(null) // 待确认生成视频的分镜信息
+  const [pendingVideoShot, setPendingVideoShot] = useState<{
+    shotNo: number
+    shotId: string
+    totalScript: string
+  } | null>(null) // 待确认生成视频的分镜信息
 
   // 使用 ref 跟踪是否应该接受远程更新
   const shouldAcceptRemoteUpdateRef = useRef(true)
-  const lastSubmittedDataRef = useRef<{ characters: CharacterInfo[], shots: ShotScript[] } | null>(null)
-  
- // 获取剧本状态
- const { data: scriptData, isLoading, refetch } = useQuery({
-  queryKey: ["scriptStatus", scriptId],
-  queryFn: () => getScriptStatus(scriptId),
-  // 修复：TanStack Query v5 中，回调参数是 query 对象
-  refetchInterval: (query) => {
-    const data = query.state.data;
-    // 如果正在生成角色或分镜，每2秒轮询一次
-    if (data?.is_generating_characters || data?.is_generating_shots) {
-      return 2000
-    }
-    // 如果有角色信息，但某些角色还没有四视图，也持续轮询
-    if (data?.characters && data.characters.length > 0) {
-      const hasMissingThreeView = data.characters.some(
-        (char: CharacterInfo) => !char.three_view_image_path
-      )
-      if (hasMissingThreeView) {
-        return 3000 // 每3秒轮询一次检查四视图生成状态
+  const _lastSubmittedDataRef = useRef<{
+    characters: CharacterInfo[]
+    shots: ShotScript[]
+  } | null>(null)
+
+  // 获取剧本状态
+  const {
+    data: scriptData,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ["scriptStatus", scriptId],
+    queryFn: () => getScriptStatus(scriptId),
+    // 修复：TanStack Query v5 中，回调参数是 query 对象
+    refetchInterval: (query) => {
+      const data = query.state.data
+      // 如果正在生成角色或分镜，每2秒轮询一次
+      if (data?.is_generating_characters || data?.is_generating_shots) {
+        return 2000
       }
-    }
-    // 如果有分镜正在生成视频（video_path为空但首帧图已存在），持续轮询
-    if (data?.shot_scripts && data.shot_scripts.length > 0) {
-      const hasGeneratingVideo = data.shot_scripts.some(
-        (shot: ShotScript) => !shot.video_path && shot.first_frame_image_path
-      )
-      if (hasGeneratingVideo) {
-        return 5000 // 每5秒轮询一次检查视频生成状态
+      // 如果有角色信息，但某些角色还没有四视图，也持续轮询
+      if (data?.characters && data.characters.length > 0) {
+        const hasMissingThreeView = data.characters.some(
+          (char: CharacterInfo) => !char.three_view_image_path,
+        )
+        if (hasMissingThreeView) {
+          return 3000 // 每3秒轮询一次检查四视图生成状态
+        }
       }
-    }
-    // 默认情况下，每10秒轮询一次，确保数据是最新的
-    return 10000
-  },
-  // 确保每次切换剧本时都重新获取数据
-  staleTime: 0,
-  refetchOnMount: true,
-})
-  
+      // 如果有分镜正在生成帧图或视频，持续轮询
+      if (data?.shot_scripts && data.shot_scripts.length > 0) {
+        const hasGeneratingFrame = data.shot_scripts.some(
+          (shot: ShotScript) =>
+            shot.first_frame_image_path && !shot.last_frame_image_path,
+        )
+        const hasGeneratingVideo = data.shot_scripts.some(
+          (shot: ShotScript) => !shot.video_path && shot.first_frame_image_path,
+        )
+        if (hasGeneratingFrame) {
+          return 3000 // 每3秒轮询检查帧图生成状态
+        }
+        if (hasGeneratingVideo) {
+          return 5000 // 每5秒轮询一次检查视频生成状态
+        }
+      }
+      // 默认情况下，每10秒轮询一次，确保数据是最新的
+      return 10000
+    },
+    // 确保每次切换剧本时都重新获取数据
+    staleTime: 0,
+    refetchOnMount: true,
+  })
+
   // 当数据加载完成时，初始化可编辑状态
   // 修复：只有在非编辑状态下才更新本地数据
   useEffect(() => {
     if (scriptData) {
       // 场景背景图数据和四视图防呆状态始终同步（不受编辑锁定影响）
-      if (scriptData.scene_backgrounds && scriptData.scene_backgrounds.length > 0) {
+      if (
+        scriptData.scene_backgrounds &&
+        scriptData.scene_backgrounds.length > 0
+      ) {
         const bgMap = new Map<number, string>()
         for (const bg of scriptData.scene_backgrounds) {
           if (bg.background_image_path) {
@@ -573,12 +710,12 @@ function ScriptDetail() {
       }
 
       // 检查正在生成四视图的角色是否已完成，如果完成则从防呆集合中移除
-      setGeneratingThreeViewCharacterIds(prev => {
+      setGeneratingThreeViewCharacterIds((prev) => {
         if (prev.size === 0) return prev
         const next = new Set(prev)
         for (const charId of prev) {
-          const char = scriptData.characters.find(c => c.id === charId)
-          if (char && char.three_view_image_path) {
+          const char = scriptData.characters.find((c) => c.id === charId)
+          if (char?.three_view_image_path) {
             next.delete(charId)
           }
         }
@@ -587,19 +724,25 @@ function ScriptDetail() {
 
       // 检查是否应该接受远程更新
       if (!shouldAcceptRemoteUpdateRef.current) {
-        console.log('[DEBUG] 用户正在编辑，拒绝远程数据覆盖')
+        console.log("[DEBUG] 用户正在编辑，拒绝远程数据覆盖")
         return
       }
 
-      console.log('[DEBUG] 接受远程数据更新')
+      console.log("[DEBUG] 接受远程数据更新")
       // 更新原始数据和编辑数据
       setOriginalCharacters(scriptData.characters)
       setOriginalShots(scriptData.shot_scripts)
       setEditableCharacters(scriptData.characters)
       setEditableShots(scriptData.shot_scripts)
     }
-  }, [scriptData?.script_id, scriptData?.characters, scriptData?.shot_scripts, scriptData?.scene_backgrounds])
-  
+  }, [
+    scriptData?.script_id,
+    scriptData?.characters,
+    scriptData?.shot_scripts,
+    scriptData?.scene_backgrounds,
+    scriptData,
+  ])
+
   // 保存单个角色信息
   const handleSaveCharacter = async (character: CharacterInfo) => {
     if (!character.id) {
@@ -612,11 +755,17 @@ function ScriptDetail() {
     setSuccessMessage(null)
 
     try {
-      await updateSingleCharacter(character.id, character.role_name, character.role_desc)
+      await updateSingleCharacter(
+        character.id,
+        character.role_name,
+        character.role_desc,
+      )
       setSuccessMessage("已提交，正在生成四视图...")
 
       // 提交成功后，标记该角色正在生成四视图（防呆）
-      setGeneratingThreeViewCharacterIds(prev => new Set(prev).add(character.id))
+      setGeneratingThreeViewCharacterIds((prev) =>
+        new Set(prev).add(character.id),
+      )
 
       // 提交成功后，更新原始数据，解除编辑锁定
       setOriginalCharacters([...editableCharacters])
@@ -633,7 +782,7 @@ function ScriptDetail() {
   }
 
   // 确认角色四视图
-  const handleConfirmThreeView = async (character: CharacterInfo) => {
+  const _handleConfirmThreeView = async (character: CharacterInfo) => {
     if (!character.id) {
       setError("角色ID不存在")
       return
@@ -682,14 +831,25 @@ function ScriptDetail() {
   })
 
   // 生成场景背景图
-  const handleGenerateBackground = async (sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[]) => {
+  const handleGenerateBackground = async (
+    sceneGroupNo: number,
+    sceneName: string,
+    sceneShots: ShotScript[],
+  ) => {
     setGeneratingBackgroundScene(sceneGroupNo)
     setError(null)
     setSuccessMessage(null)
 
     try {
-      const result = await generateSceneBackground(scriptId, sceneGroupNo, sceneName, sceneShots)
-      setSuccessMessage(result.message || `场景组${sceneGroupNo}背景图生成任务已启动`)
+      const result = await generateSceneBackground(
+        scriptId,
+        sceneGroupNo,
+        sceneName,
+        sceneShots,
+      )
+      setSuccessMessage(
+        result.message || `场景组${sceneGroupNo}背景图生成任务已启动`,
+      )
 
       // 10秒后清除成功消息
       setTimeout(() => setSuccessMessage(null), 10000)
@@ -701,7 +861,11 @@ function ScriptDetail() {
   }
 
   // 打开确认对话框
-  const openConfirmDialog = (sceneGroupNo: number, sceneName: string, sceneShots: ShotScript[]) => {
+  const openConfirmDialog = (
+    sceneGroupNo: number,
+    sceneName: string,
+    sceneShots: ShotScript[],
+  ) => {
     setPendingSceneGroup({ sceneGroupNo, sceneName, sceneShots })
     setConfirmDialogOpen(true)
   }
@@ -712,7 +876,7 @@ function ScriptDetail() {
       handleGenerateBackground(
         pendingSceneGroup.sceneGroupNo,
         pendingSceneGroup.sceneName,
-        pendingSceneGroup.sceneShots
+        pendingSceneGroup.sceneShots,
       )
     }
     setConfirmDialogOpen(false)
@@ -726,7 +890,11 @@ function ScriptDetail() {
   }
 
   // 打开视频生成确认对话框
-  const openVideoConfirmDialog = (shotNo: number, shotId: string, totalScript: string) => {
+  const openVideoConfirmDialog = (
+    shotNo: number,
+    shotId: string,
+    totalScript: string,
+  ) => {
     setPendingVideoShot({ shotNo, shotId, totalScript })
     setVideoConfirmDialogOpen(true)
   }
@@ -742,7 +910,11 @@ function ScriptDetail() {
     setError(null)
     setSuccessMessage(null)
     try {
-      const result = await generateVideoFromFirstFrame(scriptId, shotNo, totalScript)
+      const result = await generateVideoFromFirstAndLastFrame(
+        scriptId,
+        shotNo,
+        totalScript,
+      )
       setSuccessMessage(result.message || `分镜${shotNo}视频生成任务已启动`)
       setOriginalShots([...editableShots])
       shouldAcceptRemoteUpdateRef.current = true
@@ -761,14 +933,25 @@ function ScriptDetail() {
   }
 
   // 生成九宫格图片
-  const handleGenerateGridImage = async (shotNo: number, shotScriptText: string, sceneGroupNo: number) => {
+  const _handleGenerateGridImage = async (
+    shotNo: number,
+    shotScriptText: string,
+    sceneGroupNo: number,
+  ) => {
     setGeneratingGridShot(shotNo)
     setError(null)
     setSuccessMessage(null)
 
     try {
-      const result = await generateGridImage(scriptId, shotNo, shotScriptText, sceneGroupNo)
-      setSuccessMessage(result.message || `分镜${shotNo}九宫格图片生成任务已启动`)
+      const result = await generateGridImage(
+        scriptId,
+        shotNo,
+        shotScriptText,
+        sceneGroupNo,
+      )
+      setSuccessMessage(
+        result.message || `分镜${shotNo}九宫格图片生成任务已启动`,
+      )
 
       // 10秒后清除成功消息
       setTimeout(() => setSuccessMessage(null), 10000)
@@ -799,18 +982,43 @@ function ScriptDetail() {
 
   const hasCharacters = scriptData.characters.length > 0
   const hasShots = scriptData.shot_scripts.length > 0
-  const isGeneratingCharacters = scriptData.is_generating_characters
+  const _isGeneratingCharacters = scriptData.is_generating_characters
   const isGeneratingShots = scriptData.is_generating_shots
 
   return (
     <>
       {/* 图片预览模态框 */}
       {previewImage && (
-        <ImagePreviewModal 
+        <ImagePreviewModal
           imagePath={previewImage}
           scriptId={scriptId}
-          onClose={() => setPreviewImage(null)} 
+          onClose={() => setPreviewImage(null)}
         />
+      )}
+
+      {/* 首帧+尾帧图预览模态框 */}
+      {previewFrames && previewFrames.length > 0 && (
+        <Dialog open onOpenChange={() => setPreviewFrames(null)}>
+          <DialogContent className="sm:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>首帧 / 尾帧图预览</DialogTitle>
+            </DialogHeader>
+            <div className="flex gap-4 justify-center">
+              {previewFrames.map((path, idx) => (
+                <div key={idx} className="flex flex-col items-center gap-2">
+                  <span className="text-sm font-medium text-muted-foreground">
+                    {idx === 0 ? "首帧图" : "尾帧图"}
+                  </span>
+                  <img
+                    src={convertImagePathToUrl(path, scriptId)!}
+                    alt={`${idx === 0 ? "首帧" : "尾帧"}图`}
+                    className="max-w-[500px] max-h-[400px] object-contain rounded-lg border"
+                  />
+                </div>
+              ))}
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* 确认对话框 */}
@@ -833,10 +1041,7 @@ function ScriptDetail() {
             >
               取消
             </Button>
-            <Button
-              type="button"
-              onClick={handleConfirmSubmit}
-            >
+            <Button type="button" onClick={handleConfirmSubmit}>
               确定
             </Button>
           </DialogFooter>
@@ -844,7 +1049,10 @@ function ScriptDetail() {
       </Dialog>
 
       {/* 视频生成确认对话框 */}
-      <Dialog open={videoConfirmDialogOpen} onOpenChange={setVideoConfirmDialogOpen}>
+      <Dialog
+        open={videoConfirmDialogOpen}
+        onOpenChange={setVideoConfirmDialogOpen}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -863,16 +1071,13 @@ function ScriptDetail() {
             >
               取消
             </Button>
-            <Button
-              type="button"
-              onClick={handleConfirmVideoGenerate}
-            >
+            <Button type="button" onClick={handleConfirmVideoGenerate}>
               确定
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      
+
       <div className="flex flex-col gap-6">
         {/* 页面标题 */}
         <div className="flex items-center justify-between">
@@ -881,9 +1086,7 @@ function ScriptDetail() {
               <Video className="h-6 w-6 text-purple-500" />
               {scriptData.script_name}
             </h1>
-            <p className="text-muted-foreground">
-              剧本详情和生成进度
-            </p>
+            <p className="text-muted-foreground">剧本详情和生成进度</p>
           </div>
         </div>
 
@@ -910,9 +1113,7 @@ function ScriptDetail() {
               <Users className="h-5 w-5 text-purple-500" />
               角色信息
             </CardTitle>
-            <CardDescription>
-              AI根据剧本内容提取的主要角色信息
-            </CardDescription>
+            <CardDescription>AI根据剧本内容提取的主要角色信息</CardDescription>
           </CardHeader>
           <CardContent>
             {hasCharacters ? (
@@ -930,18 +1131,28 @@ function ScriptDetail() {
                     {editableCharacters.map((char, index) => {
                       const isUpdating = updatingCharacterId === char.id
                       const isConfirming = confirmingCharacterId === char.id
-                      const hasThreeView = !!convertImagePathToUrl(char.three_view_image_path, scriptId)
+                      const hasThreeView = !!convertImagePathToUrl(
+                        char.three_view_image_path,
+                        scriptId,
+                      )
                       return (
                         <TableRow key={char.id || index}>
                           <TableCell>
                             <div className="flex items-center gap-2">
                               {/* 四视图缩略图 */}
-                                {hasThreeView ? (
+                              {hasThreeView ? (
                                 <img
-                                  src={convertImagePathToUrl(char.three_view_image_path, scriptId)!}
+                                  src={
+                                    convertImagePathToUrl(
+                                      char.three_view_image_path,
+                                      scriptId,
+                                    )!
+                                  }
                                   alt={`${char.role_name}四视图`}
                                   className="w-16 h-16 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity"
-                                  onClick={() => setPreviewImage(char.three_view_image_path!)}
+                                  onClick={() =>
+                                    setPreviewImage(char.three_view_image_path!)
+                                  }
                                 />
                               ) : (
                                 <div className="w-16 h-16 bg-gray-100 rounded flex items-center justify-center">
@@ -960,14 +1171,18 @@ function ScriptDetail() {
                                 newChars[index].role_name = e.target.value
                                 setEditableCharacters(newChars)
                                 // 用户修改了角色信息，允许重新提交
-                                setGeneratingThreeViewCharacterIds(prev => {
+                                setGeneratingThreeViewCharacterIds((prev) => {
                                   if (!prev.has(char.id)) return prev
                                   const next = new Set(prev)
                                   next.delete(char.id)
                                   return next
                                 })
                               }}
-                              disabled={isUpdating || isConfirming || generatingThreeViewCharacterIds.has(char.id)}
+                              disabled={
+                                isUpdating ||
+                                isConfirming ||
+                                generatingThreeViewCharacterIds.has(char.id)
+                              }
                             />
                           </TableCell>
                           <TableCell>
@@ -980,14 +1195,18 @@ function ScriptDetail() {
                                 newChars[index].role_desc = e.target.value
                                 setEditableCharacters(newChars)
                                 // 用户修改了角色信息，允许重新提交
-                                setGeneratingThreeViewCharacterIds(prev => {
+                                setGeneratingThreeViewCharacterIds((prev) => {
                                   if (!prev.has(char.id)) return prev
                                   const next = new Set(prev)
                                   next.delete(char.id)
                                   return next
                                 })
                               }}
-                              disabled={isUpdating || isConfirming || generatingThreeViewCharacterIds.has(char.id)}
+                              disabled={
+                                isUpdating ||
+                                isConfirming ||
+                                generatingThreeViewCharacterIds.has(char.id)
+                              }
                               className="min-h-[60px]"
                             />
                           </TableCell>
@@ -996,9 +1215,15 @@ function ScriptDetail() {
                               <Button
                                 size="sm"
                                 onClick={() => handleSaveCharacter(char)}
-                                disabled={isUpdating || isConfirming || !char.id || generatingThreeViewCharacterIds.has(char.id)}
+                                disabled={
+                                  isUpdating ||
+                                  isConfirming ||
+                                  !char.id ||
+                                  generatingThreeViewCharacterIds.has(char.id)
+                                }
                               >
-                                {isUpdating || generatingThreeViewCharacterIds.has(char.id) ? (
+                                {isUpdating ||
+                                generatingThreeViewCharacterIds.has(char.id) ? (
                                   <>
                                     <Loader2 className="h-4 w-4 animate-spin mr-1" />
                                     生成中
@@ -1034,9 +1259,7 @@ function ScriptDetail() {
               <Film className="h-5 w-5 text-purple-500" />
               分镜头脚本
             </CardTitle>
-            <CardDescription>
-              AI根据剧本内容生成的分镜头脚本
-            </CardDescription>
+            <CardDescription>AI根据剧本内容生成的分镜头脚本</CardDescription>
           </CardHeader>
           <CardContent>
             {isGeneratingShots ? (
@@ -1055,23 +1278,36 @@ function ScriptDetail() {
             ) : hasShots ? (
               <div className="space-y-6">
                 {/* 按场景分组显示 */}
-                {Array.from(new Set(editableShots.map(shot => shot.scene_group))).map(sceneGroupNo => {
-                  const sceneShots = editableShots.filter(shot => shot.scene_group === sceneGroupNo)
+                {Array.from(
+                  new Set(editableShots.map((shot) => shot.scene_group)),
+                ).map((sceneGroupNo) => {
+                  const sceneShots = editableShots.filter(
+                    (shot) => shot.scene_group === sceneGroupNo,
+                  )
                   const sceneName = sceneShots[0]?.scene_name || "默认场景"
-                  const isGeneratingBackground = generatingBackgroundScene === sceneGroupNo
+                  const isGeneratingBackground =
+                    generatingBackgroundScene === sceneGroupNo
                   const backgroundImagePath = sceneBackgrounds.get(sceneGroupNo)
-                  
+
                   return (
                     <div key={sceneGroupNo} className="space-y-4">
                       {/* 场景组标题和提交按钮 */}
                       <div className="flex items-center justify-between bg-muted/50 px-4 py-2 rounded-lg">
                         <div className="flex items-center gap-2">
                           <Film className="h-4 w-4 text-purple-500" />
-                          <span className="font-semibold">场景组{sceneGroupNo}：{sceneName}</span>
+                          <span className="font-semibold">
+                            场景组{sceneGroupNo}：{sceneName}
+                          </span>
                         </div>
                         <Button
                           size="sm"
-                          onClick={() => openConfirmDialog(sceneGroupNo, sceneName, sceneShots)}
+                          onClick={() =>
+                            openConfirmDialog(
+                              sceneGroupNo,
+                              sceneName,
+                              sceneShots,
+                            )
+                          }
                           disabled={isGeneratingBackground}
                         >
                           {isGeneratingBackground ? (
@@ -1092,40 +1328,140 @@ function ScriptDetail() {
                       {backgroundImagePath && (
                         <div className="inline-block">
                           <img
-                            src={convertImagePathToUrl(backgroundImagePath, scriptId)!}
+                            src={
+                              convertImagePathToUrl(
+                                backgroundImagePath,
+                                scriptId,
+                              )!
+                            }
                             alt={`场景组${sceneGroupNo}背景图`}
                             className="h-16 rounded cursor-pointer hover:opacity-80 transition-opacity"
                             onClick={() => setPreviewImage(backgroundImagePath)}
                           />
                         </div>
                       )}
-                      
+
                       {/* 按分镜头组显示 */}
-                      {Array.from(new Set(sceneShots.map(shot => shot.shot_group))).map(shotGroupNo => {
-                        const groupShots = sceneShots.filter(shot => shot.shot_group === shotGroupNo)
+                      {Array.from(
+                        new Set(sceneShots.map((shot) => shot.shot_group)),
+                      ).map((shotGroupNo) => {
+                        const groupShots = sceneShots.filter(
+                          (shot) => shot.shot_group === shotGroupNo,
+                        )
 
                         return (
-                          <div key={`${sceneGroupNo}-${shotGroupNo}`} className="border rounded-lg p-4 space-y-3">
+                          <div
+                            key={`${sceneGroupNo}-${shotGroupNo}`}
+                            className="border rounded-lg p-4 space-y-3"
+                          >
                             {/* 分镜内容 */}
                             {groupShots.map((shot, index) => {
-                              const shotIndex = editableShots.findIndex(s => s.id === shot.id)
-                              const isGeneratingGrid = generatingGridShot === shot.shot_no
-                              const hasFirstFrameImage = !!convertImagePathToUrl(shot.first_frame_image_path, scriptId)
+                              const shotIndex = editableShots.findIndex(
+                                (s) => s.id === shot.id,
+                              )
+                              const isGeneratingGrid =
+                                generatingGridShot === shot.shot_no
+                              const hasFirstFrameImage =
+                                !!convertImagePathToUrl(
+                                  shot.first_frame_image_path,
+                                  scriptId,
+                                )
+                              const hasLastFrameImage = !!convertImagePathToUrl(
+                                shot.last_frame_image_path,
+                                scriptId,
+                              )
+                              const hasAnyFrameImage =
+                                hasFirstFrameImage || hasLastFrameImage
                               return (
-                                <div key={shot.id || index} className="space-y-2">
+                                <div
+                                  key={shot.id || index}
+                                  className="space-y-2"
+                                >
                                   <div className="flex items-start gap-3">
                                     <div className="flex flex-col items-center min-w-[60px] pt-2">
                                       <span className="text-sm font-medium">
                                         分镜{shot.shot_no}
                                       </span>
-                                      {/* 首帧图预览 */}
-                                      {hasFirstFrameImage ? (
-                                        <img
-                                          src={convertImagePathToUrl(shot.first_frame_image_path, scriptId)!}
-                                          alt={`分镜${shot.shot_no}首帧图`}
-                                          className="w-12 h-8 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity mt-1"
-                                          onClick={() => setPreviewImage(shot.first_frame_image_path!)}
-                                        />
+                                      {/* 首帧+尾帧图预览 - 交错折叠 */}
+                                      {hasAnyFrameImage ? (
+                                        <div
+                                          className="relative w-14 h-10 mt-1 cursor-pointer group"
+                                          role="button"
+                                          tabIndex={0}
+                                          onClick={() => {
+                                            const paths: string[] = []
+                                            if (shot.first_frame_image_path)
+                                              paths.push(
+                                                shot.first_frame_image_path,
+                                              )
+                                            if (shot.last_frame_image_path)
+                                              paths.push(
+                                                shot.last_frame_image_path,
+                                              )
+                                            if (paths.length === 1) {
+                                              setPreviewImage(paths[0])
+                                            } else {
+                                              setPreviewFrames(paths)
+                                            }
+                                          }}
+                                          onKeyDown={(e) => {
+                                            if (
+                                              e.key === "Enter" ||
+                                              e.key === " "
+                                            ) {
+                                              const paths: string[] = []
+                                              if (shot.first_frame_image_path)
+                                                paths.push(
+                                                  shot.first_frame_image_path,
+                                                )
+                                              if (shot.last_frame_image_path)
+                                                paths.push(
+                                                  shot.last_frame_image_path,
+                                                )
+                                              if (paths.length === 1) {
+                                                setPreviewImage(paths[0])
+                                              } else {
+                                                setPreviewFrames(paths)
+                                              }
+                                            }
+                                          }}
+                                        >
+                                          {hasLastFrameImage && (
+                                            <img
+                                              src={
+                                                convertImagePathToUrl(
+                                                  shot.last_frame_image_path,
+                                                  scriptId,
+                                                )!
+                                              }
+                                              alt={`分镜${shot.shot_no}尾帧图`}
+                                              className="absolute top-0 left-1 w-11 h-7 object-cover rounded shadow-sm border border-white/50 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                                              style={{
+                                                transform: "rotate(-6deg)",
+                                                zIndex: 1,
+                                              }}
+                                            />
+                                          )}
+                                          {hasFirstFrameImage && (
+                                            <img
+                                              src={
+                                                convertImagePathToUrl(
+                                                  shot.first_frame_image_path,
+                                                  scriptId,
+                                                )!
+                                              }
+                                              alt={`分镜${shot.shot_no}首帧图`}
+                                              className="absolute bottom-0 right-0 w-11 h-7 object-cover rounded shadow-md border border-white/50 transition-transform group-hover:-translate-x-0.5 group-hover:translate-y-0.5"
+                                              style={{
+                                                transform: "rotate(6deg)",
+                                                zIndex: 2,
+                                              }}
+                                            />
+                                          )}
+                                          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 text-[8px] text-muted-foreground whitespace-nowrap z-10">
+                                            首/尾帧
+                                          </div>
+                                        </div>
                                       ) : null}
                                     </div>
                                     <Textarea
@@ -1134,7 +1470,8 @@ function ScriptDetail() {
                                         // 用户开始输入，立即锁定远程更新
                                         shouldAcceptRemoteUpdateRef.current = false
                                         const newShots = [...editableShots]
-                                        newShots[shotIndex].total_script = e.target.value
+                                        newShots[shotIndex].total_script =
+                                          e.target.value
                                         setEditableShots(newShots)
                                       }}
                                       disabled={updateShotsMutation.isPending}
@@ -1145,15 +1482,48 @@ function ScriptDetail() {
                                   <div className="flex justify-end gap-2 items-center">
                                     {(() => {
                                       // 防呆检查：所有角色四视图是否生成完 + 当前场景组背景图是否生成完
-                                      const allCharactersHaveThreeView = editableCharacters.length > 0 && editableCharacters.every(c => !!c.three_view_image_path)
-                                      const hasSceneBackground = !!sceneBackgrounds.get(sceneGroupNo)
-                                      const canSubmitShot = allCharactersHaveThreeView && hasSceneBackground
-                                      const shotSubmitDisabled = isGeneratingGrid || updateShotsMutation.isPending || !canSubmitShot
+                                      const allCharactersHaveThreeView =
+                                        editableCharacters.length > 0 &&
+                                        editableCharacters.every(
+                                          (c) => !!c.three_view_image_path,
+                                        )
+                                      const hasSceneBackground =
+                                        !!sceneBackgrounds.get(sceneGroupNo)
+                                      const isFirstShotInSceneGroup =
+                                        sceneShots.findIndex(
+                                          (s) => s.id === shot.id,
+                                        ) === 0
+                                      const previousShotInSceneGroup = !isFirstShotInSceneGroup
+                                        ? sceneShots[
+                                            sceneShots.findIndex(
+                                              (s) => s.id === shot.id,
+                                            ) - 1
+                                          ]
+                                        : null
+                                      const previousShotFramesReady =
+                                        !previousShotInSceneGroup ||
+                                        (!!previousShotInSceneGroup.first_frame_image_path &&
+                                          !!previousShotInSceneGroup.last_frame_image_path)
+                                      const canSubmitShot =
+                                        allCharactersHaveThreeView &&
+                                        hasSceneBackground &&
+                                        (isFirstShotInSceneGroup || previousShotFramesReady)
+                                      const shotSubmitDisabled =
+                                        isGeneratingGrid ||
+                                        updateShotsMutation.isPending ||
+                                        !canSubmitShot
                                       // 生成具体的缺失提示
                                       const missingHints: string[] = []
-                                      if (!allCharactersHaveThreeView) missingHints.push("角色四视图")
-                                      if (!hasSceneBackground) missingHints.push("场景背景图")
-                                      const missingText = missingHints.length > 0 ? `${missingHints.join("、")}缺失` : ""
+                                      if (!allCharactersHaveThreeView)
+                                        missingHints.push("角色四视图")
+                                      if (!hasSceneBackground)
+                                        missingHints.push("场景背景图")
+                                      if (!isFirstShotInSceneGroup && !previousShotFramesReady)
+                                        missingHints.push("上一分镜首尾帧未就绪")
+                                      const missingText =
+                                        missingHints.length > 0
+                                          ? `${missingHints.join("、")}缺失`
+                                          : ""
                                       return (
                                         <Tooltip>
                                           <TooltipTrigger asChild>
@@ -1161,20 +1531,59 @@ function ScriptDetail() {
                                               <Button
                                                 size="sm"
                                                 onClick={async () => {
-                                                  // 先更新数据库中的total_script，再生成首帧图
-                                                  setGeneratingGridShot(shot.shot_no)
+                                                  setGeneratingGridShot(
+                                                    shot.shot_no,
+                                                  )
                                                   setError(null)
                                                   setSuccessMessage(null)
                                                   try {
-                                                    await updateSingleShot(shot.id, shot.total_script)
-                                                    const result = await generateFirstFrameImage(scriptId, shot.shot_no, shot.total_script, sceneGroupNo, scriptData.script_name)
-                                                    setSuccessMessage(result.message || `分镜${shot.shot_no}已提交，首帧图生成任务已启动`)
-                                                    // 更新原始数据，解除编辑锁定
-                                                    setOriginalShots([...editableShots])
+                                                    await updateSingleShot(
+                                                      shot.id,
+                                                      shot.total_script,
+                                                    )
+                                                    const sceneShotsForGroup =
+                                                      editableShots.filter(
+                                                        (s) =>
+                                                          s.scene_group ===
+                                                          sceneGroupNo,
+                                                      )
+                                                    const isFirstInSceneGroup =
+                                                      sceneShotsForGroup.length ===
+                                                        0 ||
+                                                      shot.shot_no <=
+                                                        Math.min(
+                                                          ...sceneShotsForGroup.map(
+                                                            (s) => s.shot_no,
+                                                          ),
+                                                        )
+                                                    const result =
+                                                      await generateFirstAndLastFrame(
+                                                        scriptId,
+                                                        shot.shot_no,
+                                                        shot.total_script,
+                                                        sceneGroupNo,
+                                                        scriptData.script_name,
+                                                        isFirstInSceneGroup,
+                                                      )
+                                                    setSuccessMessage(
+                                                      result.message ||
+                                                        `分镜${shot.shot_no}已提交，首帧+尾帧图生成任务已启动`,
+                                                    )
+                                                    setOriginalShots([
+                                                      ...editableShots,
+                                                    ])
                                                     shouldAcceptRemoteUpdateRef.current = true
-                                                    setTimeout(() => setSuccessMessage(null), 10000)
+                                                    setTimeout(
+                                                      () =>
+                                                        setSuccessMessage(null),
+                                                      10000,
+                                                    )
                                                   } catch (err) {
-                                                    setError(err instanceof Error ? err.message : "提交失败")
+                                                    setError(
+                                                      err instanceof Error
+                                                        ? err.message
+                                                        : "提交失败",
+                                                    )
                                                   } finally {
                                                     setGeneratingGridShot(null)
                                                   }
@@ -1196,7 +1605,9 @@ function ScriptDetail() {
                                             </span>
                                           </TooltipTrigger>
                                           <TooltipContent>
-                                            {canSubmitShot ? "提交生成首帧图" : missingText}
+                                            {canSubmitShot
+                                              ? "提交生成首帧+尾帧图"
+                                              : missingText}
                                           </TooltipContent>
                                         </Tooltip>
                                       )
@@ -1204,8 +1615,17 @@ function ScriptDetail() {
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      onClick={() => openVideoConfirmDialog(shot.shot_no, shot.id, shot.total_script)}
-                                      disabled={!hasFirstFrameImage || generatingVideoShot === shot.shot_no}
+                                      onClick={() =>
+                                        openVideoConfirmDialog(
+                                          shot.shot_no,
+                                          shot.id,
+                                          shot.total_script,
+                                        )
+                                      }
+                                      disabled={
+                                        !hasFirstFrameImage ||
+                                        generatingVideoShot === shot.shot_no
+                                      }
                                     >
                                       {generatingVideoShot === shot.shot_no ? (
                                         <>
@@ -1221,13 +1641,24 @@ function ScriptDetail() {
                                     </Button>
                                     {/* 查看视频超链接 */}
                                     {(() => {
-                                      const videoUrl = convertImagePathToUrl(shot.video_path, scriptId)
+                                      const videoUrl = convertImagePathToUrl(
+                                        shot.video_path,
+                                        scriptId,
+                                      )
                                       const hasVideo = !!videoUrl
                                       return (
                                         <a
-                                          href={hasVideo ? videoUrl! : undefined}
-                                          target={hasVideo ? "_blank" : undefined}
-                                          rel={hasVideo ? "noopener noreferrer" : undefined}
+                                          href={
+                                            hasVideo ? videoUrl! : undefined
+                                          }
+                                          target={
+                                            hasVideo ? "_blank" : undefined
+                                          }
+                                          rel={
+                                            hasVideo
+                                              ? "noopener noreferrer"
+                                              : undefined
+                                          }
                                           onClick={(e) => {
                                             if (!hasVideo) {
                                               e.preventDefault()

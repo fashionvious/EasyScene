@@ -1,35 +1,34 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { useState, useRef, useEffect, useCallback } from "react"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
   ArrowLeft,
-  Loader2,
-  Users,
+  Brain,
+  ChevronRight,
+  FileText,
+  History,
   Image as ImageIcon,
   LayoutGrid,
-  FileText,
-  Send,
-  Plus,
-  History,
+  Loader2,
   MessageSquare,
-  Wrench,
-  ChevronRight,
-  Brain,
+  Plus,
+  Send,
+  Users,
   Video,
-  Play,
+  Wrench,
 } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Dialog,
+  DialogClose,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
-  DialogClose,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
 
 // ==================== 类型定义 ====================
 
@@ -49,6 +48,7 @@ interface ShotScript {
   shot_group: number
   grid_image_path?: string | null
   first_frame_image_path?: string | null
+  last_frame_image_path?: string | null
   video_path?: string | null
 }
 
@@ -149,9 +149,7 @@ function convertImagePathToUrl(
 ): string | null {
   if (!imagePath) return null
   const pathParts = imagePath.split(/[/\\]/)
-  const generatedImagesIndex = pathParts.findIndex(
-    (part) => part === "generated_images",
-  )
+  const generatedImagesIndex = pathParts.indexOf("generated_images")
   if (generatedImagesIndex > 0) {
     const extractedScriptId = pathParts[generatedImagesIndex - 1]
     const fileName = pathParts[pathParts.length - 1]
@@ -172,7 +170,7 @@ function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("access_token")
   const headers: Record<string, string> = {}
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`
+    headers.Authorization = `Bearer ${token}`
   }
   return headers
 }
@@ -200,7 +198,12 @@ async function fetchConversations(scriptId: string): Promise<Conversation[]> {
     headers: getAuthHeaders(),
   })
   if (!response.ok) throw new Error(`获取会话列表失败: ${response.statusText}`)
-  const data: { id: string; title: string; create_time: string; title_set: boolean }[] = await response.json()
+  const data: {
+    id: string
+    title: string
+    create_time: string
+    title_set: boolean
+  }[] = await response.json()
   return data.map((c) => ({
     id: c.id,
     title: c.title,
@@ -211,12 +214,22 @@ async function fetchConversations(scriptId: string): Promise<Conversation[]> {
 }
 
 /** 从后端获取指定会话的消息列表 */
-async function fetchConversationMessages(conversationId: string): Promise<ChatMessage[]> {
-  const response = await fetch(`${CONVERSATIONS_URL}/${conversationId}/messages`, {
-    headers: getAuthHeaders(),
-  })
+async function fetchConversationMessages(
+  conversationId: string,
+): Promise<ChatMessage[]> {
+  const response = await fetch(
+    `${CONVERSATIONS_URL}/${conversationId}/messages`,
+    {
+      headers: getAuthHeaders(),
+    },
+  )
   if (!response.ok) throw new Error(`获取消息失败: ${response.statusText}`)
-  const data: { id: string; role: string; content: string; create_time: string }[] = await response.json()
+  const data: {
+    id: string
+    role: string
+    content: string
+    create_time: string
+  }[] = await response.json()
   return data.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
@@ -274,9 +287,7 @@ function HistoryDialog({
                 >
                   <MessageSquare className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">
-                      {conv.title}
-                    </p>
+                    <p className="text-sm font-medium truncate">{conv.title}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {conv.create_time}
                     </p>
@@ -361,14 +372,18 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[85%] rounded-[--radius-standard] px-3 py-2 text-sm leading-relaxed
-        bg-muted/60 text-foreground space-y-1">
+      <div
+        className="max-w-[85%] rounded-[--radius-standard] px-3 py-2 text-sm leading-relaxed
+        bg-muted/60 text-foreground space-y-1"
+      >
         {/* 工具调用步骤 */}
         {hasToolSteps && <ToolStepsView steps={msg.toolSteps!} />}
 
         {/* 文本内容 */}
         {hasContent && (
-          <div className="whitespace-pre-wrap">{formatResponse(msg.content)}</div>
+          <div className="whitespace-pre-wrap">
+            {formatResponse(msg.content)}
+          </div>
         )}
 
         {/* 流式加载占位 */}
@@ -396,20 +411,20 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
   const [inputValue, setInputValue] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
+  const [_isLoading, setIsLoading] = useState(true)
 
   // --- Refs ---
   const scrollRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  const currentConv = conversations.find((c) => c.id === currentConvId)
+  const _currentConv = conversations.find((c) => c.id === currentConvId)
 
   // 自动滚动到底部
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages])
+  }, [])
 
   // --- 初始化：从后端加载历史会话列表 ---
   useEffect(() => {
@@ -429,7 +444,9 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
           setMessages(msgs)
           // 缓存消息到 conversations 中
           setConversations((prev) =>
-            prev.map((c) => (c.id === latest.id ? { ...c, messages: msgs } : c)),
+            prev.map((c) =>
+              c.id === latest.id ? { ...c, messages: msgs } : c,
+            ),
           )
         }
       } catch (err) {
@@ -439,7 +456,9 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [scriptId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- 新建会话 ---
@@ -528,7 +547,7 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
     const conv = conversations.find((c) => c.id === convId)
     if (!conv?.title_set) {
       const autoTitle =
-        userText.length > 20 ? userText.slice(0, 20) + "..." : userText
+        userText.length > 20 ? `${userText.slice(0, 20)}...` : userText
       setConvTitle(autoTitle)
       updateConversation(convId, {
         title: autoTitle,
@@ -557,7 +576,7 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
       "Content-Type": "application/json",
     }
     if (token) {
-      headers["Authorization"] = `Bearer ${token}`
+      headers.Authorization = `Bearer ${token}`
     }
 
     const abortController = new AbortController()
@@ -644,10 +663,14 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
                   const toolName = event.tool_name
                   toolSteps = toolSteps.map((step, idx) => {
                     const lastMatchIdx = toolSteps.findLastIndex(
-                      (s) => s.tool_name === toolName && s.status === "running"
+                      (s) => s.tool_name === toolName && s.status === "running",
                     )
                     if (idx === lastMatchIdx) {
-                      return { ...step, result: event.result, status: "completed" as const }
+                      return {
+                        ...step,
+                        result: event.result,
+                        status: "completed" as const,
+                      }
                     }
                     return step
                   })
@@ -711,7 +734,11 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
 
         const finalMessages = [
           ...newMessages,
-          { role: "assistant" as const, content: assistantContent, streaming: false },
+          {
+            role: "assistant" as const,
+            content: assistantContent,
+            streaming: false,
+          },
         ]
         setMessages(finalMessages)
         updateConversation(convId, { messages: finalMessages })
@@ -840,7 +867,11 @@ function ScriptDetailPage() {
   const navigate = useNavigate()
   const { scriptId } = Route.useParams()
 
-  const { data: scriptData, isLoading, error } = useQuery({
+  const {
+    data: scriptData,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ["scriptStatus", scriptId],
     queryFn: () => getScriptStatus(scriptId),
     refetchInterval: (query) => {
@@ -940,6 +971,11 @@ function ScriptDetailPage() {
                   <span className="text-caption font-semibold text-center line-clamp-2">
                     {char.role_name}
                   </span>
+                  {char.three_view_image_path && (
+                    <span className="text-[10px] text-muted-foreground/60 text-center line-clamp-1 w-full">
+                      {char.three_view_image_path.split(/[/\\]/).pop()}
+                    </span>
+                  )}
                 </div>
               )
             })}
@@ -985,6 +1021,11 @@ function ScriptDetailPage() {
                   <span className="text-caption font-semibold text-center">
                     场景组{bg.scene_group}：{bg.scene_name}
                   </span>
+                  {bg.background_image_path && (
+                    <span className="text-[10px] text-muted-foreground/60 text-center line-clamp-1 w-full">
+                      {bg.background_image_path.split(/[/\\]/).pop()}
+                    </span>
+                  )}
                 </div>
               )
             })}
@@ -992,12 +1033,12 @@ function ScriptDetailPage() {
         </section>
       )}
 
-      {/* ===== 分镜头首帧图 ===== */}
+      {/* ===== 分镜头首尾帧图 ===== */}
       {shot_scripts.length > 0 && (
         <section className="space-y-5">
           <h2 className="heading-feature flex items-center gap-2">
             <LayoutGrid className="h-5 w-5 text-primary" />
-            分镜头首帧图
+            分镜头首尾帧图
           </h2>
           {sceneGroups.map((sceneGroup) => {
             const sceneShots = shot_scripts.filter(
@@ -1011,8 +1052,12 @@ function ScriptDetailPage() {
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                   {sceneShots.map((shot) => {
-                    const imgUrl = convertImagePathToUrl(
+                    const firstImgUrl = convertImagePathToUrl(
                       shot.first_frame_image_path,
+                      scriptId,
+                    )
+                    const lastImgUrl = convertImagePathToUrl(
+                      shot.last_frame_image_path,
                       scriptId,
                     )
                     return (
@@ -1025,10 +1070,10 @@ function ScriptDetailPage() {
                             bg-muted/40 border border-border/50
                             group-hover:shadow-lg transition-shadow duration-200"
                         >
-                          {imgUrl ? (
+                          {firstImgUrl ? (
                             <img
-                              src={imgUrl}
-                              alt={`分镜${shot.shot_no}`}
+                              src={firstImgUrl}
+                              alt={`分镜${shot.shot_no}首帧`}
                               className="w-full h-auto object-contain"
                             />
                           ) : (
@@ -1037,9 +1082,32 @@ function ScriptDetailPage() {
                             </div>
                           )}
                         </div>
+                        {lastImgUrl && (
+                          <div
+                            className="relative w-full rounded-[16px] overflow-hidden
+                              bg-muted/40 border border-border/50
+                              group-hover:shadow-lg transition-shadow duration-200"
+                          >
+                            <img
+                              src={lastImgUrl}
+                              alt={`分镜${shot.shot_no}尾帧`}
+                              className="w-full h-auto object-contain"
+                            />
+                          </div>
+                        )}
                         <span className="text-caption font-semibold text-center">
                           分镜{shot.shot_no}
                         </span>
+                        {shot.first_frame_image_path && (
+                          <span className="text-[10px] text-muted-foreground/60 text-center line-clamp-1 w-full">
+                            {shot.first_frame_image_path.split(/[/\\]/).pop()}
+                          </span>
+                        )}
+                        {lastImgUrl && shot.last_frame_image_path && (
+                          <span className="text-[10px] text-muted-foreground/60 text-center line-clamp-1 w-full">
+                            {shot.last_frame_image_path.split(/[/\\]/).pop()}
+                          </span>
+                        )}
                       </div>
                     )
                   })}
@@ -1102,6 +1170,11 @@ function ScriptDetailPage() {
                         <span className="text-caption font-semibold text-center">
                           分镜{shot.shot_no}
                         </span>
+                        {shot.video_path && (
+                          <span className="text-[10px] text-muted-foreground/60 text-center line-clamp-1 w-full">
+                            {shot.video_path.split(/[/\\]/).pop()}
+                          </span>
+                        )}
                       </div>
                     )
                   })}

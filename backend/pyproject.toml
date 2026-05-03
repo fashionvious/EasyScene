@@ -78,3 +78,6 @@ sort = "-Cover"
 
 [tool.coverage.html]
 show_contexts = true
+
+[tool.pytest.ini_options]
+norecursedirs = ["jianying-editor-skill/*", "app/agent/skills_agent/*"]

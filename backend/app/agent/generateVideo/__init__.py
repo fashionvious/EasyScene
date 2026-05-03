@@ -3,11 +3,11 @@
 """
 from .text2video import (
     VideoGenerationState,
-    CharacterExtractionAgent,
-    ShotScriptGenerationAgent,
     build_video_generation_graph,
     run_video_generation_workflow,
 )
+from .character_extraction_agent import CharacterExtractionAgent
+from .shot_script_generation_agent import ShotScriptGenerationAgent
 
 __all__ = [
     "VideoGenerationState",

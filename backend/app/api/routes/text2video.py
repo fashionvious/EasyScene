@@ -20,6 +20,7 @@ from app.models import (
     CharacterInfoCreate,
     ShotScript,
     ShotScriptCreate,
+    SceneGraph,
 )
 from app.agent.utils.redis import (
     get_video_project_manager,
@@ -84,6 +85,15 @@ class GenerateFirstFrameImageRequest(BaseModel):
     script_name: str  # 剧本名称，用于文件命名
 
 
+class GenerateFirstAndLastFrameRequest(BaseModel):
+    """生成首帧图+尾帧图请求"""
+    shot_no: int
+    shot_script_text: str
+    scene_group_no: int  # 场景组号
+    script_name: str  # 剧本名称
+    is_first_in_scene_group: bool  # 是否是当前场景组的第一条分镜
+
+
 class GenerateVideoRequest(BaseModel):
     """生成视频请求"""
     shot_no: int
@@ -140,6 +150,7 @@ class ShotScriptResponse(BaseModel):
     shot_group: int = 1  # 分镜头组号
     grid_image_path: Optional[str] = None  # 九宫格图片路径
     first_frame_image_path: Optional[str] = None  # 首帧图路径
+    last_frame_image_path: Optional[str] = None  # 尾帧图路径
     video_path: Optional[str] = None  # 视频路径
 
 
@@ -202,6 +213,16 @@ class GenerateFirstFrameImageResponse(BaseModel):
     script_id: str
     shot_no: int
     first_frame_image_path: str
+    message: str
+
+
+class GenerateFirstAndLastFrameResponse(BaseModel):
+    """生成首帧图+尾帧图响应"""
+    success: bool
+    script_id: str
+    shot_no: int
+    first_frame_image_path: str
+    last_frame_image_path: str
     message: str
 
 
@@ -423,9 +444,21 @@ async def api_get_script_status(
         # 添加更多调试信息
         logger.info(f"[API] 返回状态: is_generating_characters={is_generating_characters}, is_generating_shots={is_generating_shots}, characters_count={len(characters)}, shots_count={len(shot_scripts)}")
         
-        # 从Redis元数据中获取场景背景图
+        # 优先从 scene_graph 数据库表获取场景背景图，Redis 作为兜底
         scene_backgrounds = []
-        if project_state and project_state.metadata:
+        scene_graphs_statement = select(SceneGraph).where(
+            SceneGraph.script_id == script_uuid,
+            SceneGraph.is_deleted == 0,
+        ).order_by(SceneGraph.scene_group)
+        scene_graphs = session.exec(scene_graphs_statement).all()
+        if scene_graphs:
+            for sg in scene_graphs:
+                scene_backgrounds.append(SceneBackgroundResponse(
+                    scene_group=sg.scene_group,
+                    scene_name=sg.scene_name,
+                    background_image_path=sg.scene_image_path,
+                ))
+        elif project_state and project_state.metadata:
             scene_backgrounds_data = project_state.metadata.get("scene_backgrounds", [])
             for bg in scene_backgrounds_data:
                 scene_backgrounds.append(SceneBackgroundResponse(
@@ -458,6 +491,7 @@ async def api_get_script_status(
                     shot_group=s.shot_group,
                     grid_image_path=s.grid_image_path,
                     first_frame_image_path=s.first_frame_image_path,
+                    last_frame_image_path=s.last_frame_image_path,
                     video_path=s.video_path,
                 )
                 for s in shot_scripts
@@ -801,16 +835,29 @@ async def api_update_shots(
             old_shot.is_deleted = 1
             session.add(old_shot)
         
-        # 创建新的分镜头脚本
+        # 创建新的分镜头脚本，同时关联已有的 scene_graph 记录
         new_shots = []
         for idx, shot_data in enumerate(request.shot_scripts):
+            scene_group_val = shot_data.get("scene_group", 1)
+            scene_id_val = None
+            existing_sg = session.exec(
+                select(SceneGraph).where(
+                    SceneGraph.script_id == script_uuid,
+                    SceneGraph.scene_group == scene_group_val,
+                    SceneGraph.is_deleted == 0,
+                )
+            ).first()
+            if existing_sg:
+                scene_id_val = existing_sg.id
+
             shot = ShotScript(
                 script_id=script_uuid,
                 shot_no=shot_data.get("shot_no", idx + 1),
                 total_script=shot_data.get("total_script", ""),
-                scene_group=shot_data.get("scene_group", 1),
+                scene_group=scene_group_val,
                 scene_name=shot_data.get("scene_name", "默认场景"),
                 shot_group=shot_data.get("shot_group", 1),
+                scene_id=scene_id_val,
                 version=1,
             )
             session.add(shot)
@@ -1076,6 +1123,84 @@ async def api_generate_first_frame_image(
         await redis_manager.close()
 
 
+@router.post("/text2video/generate-first-and-last-frame/{script_id}", response_model=GenerateFirstAndLastFrameResponse)
+async def api_generate_first_and_last_frame(
+    script_id: str,
+    request: GenerateFirstAndLastFrameRequest,
+    session: SessionDep,
+    current_user: CurrentUser,
+):
+    """
+    为指定分镜生成首帧图+尾帧图
+    
+    逻辑:
+    - 如果是场景组的第一条分镜(is_first_in_scene_group=True): 生成首帧图 + 生成尾帧图
+    - 如果不是第一条: 将上一条分镜的尾帧图复制为当前首帧图 + 生成尾帧图
+    
+    参数:
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - shot_script_text: 分镜脚本内容
+    - scene_group_no: 场景组号
+    - script_name: 剧本名称
+    - is_first_in_scene_group: 是否是当前场景组的第一条分镜
+    
+    返回:
+    - success: 是否成功
+    - script_id: 剧本ID
+    - shot_no: 分镜号
+    - first_frame_image_path: 首帧图路径
+    - last_frame_image_path: 尾帧图路径
+    - message: 提示信息
+    """
+    redis_manager = get_video_project_manager()
+    
+    try:
+        script_uuid = uuid.UUID(script_id)
+        script = session.get(Script, script_uuid)
+        
+        if not script:
+            raise HTTPException(status_code=404, detail="剧本不存在")
+        
+        if script.creator_id != current_user.id and script.share_perm < 2:
+            raise HTTPException(status_code=403, detail="无权为此剧本生成帧图")
+        
+        from app.agent.generateVideo.tasks import generate_first_and_last_frame_task
+        
+        task = generate_first_and_last_frame_task.delay(
+            script_id=script_id,
+            shot_no=request.shot_no,
+            shot_script_text=request.shot_script_text,
+            scene_group_no=request.scene_group_no,
+            script_name=request.script_name,
+            user_id=str(current_user.id),
+            is_first_in_scene_group=request.is_first_in_scene_group,
+        )
+        
+        await redis_manager.update_project_state(
+            project_id=script_id,
+            status=ProjectStatus.RUNNING,
+            task_id=task.id,
+        )
+        
+        return GenerateFirstAndLastFrameResponse(
+            success=True,
+            script_id=script_id,
+            shot_no=request.shot_no,
+            first_frame_image_path="",
+            last_frame_image_path="",
+            message=f"分镜{request.shot_no}首帧+尾帧图生成任务已启动",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的剧本ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成首帧+尾帧图失败: {str(e)}")
+    finally:
+        await redis_manager.close()
+
+
 @router.post("/text2video/generate-video/{script_id}", response_model=GenerateVideoResponse)
 async def api_generate_video(
     script_id: str,
@@ -1147,15 +1272,15 @@ async def api_generate_video(
         await redis_manager.close()
 
 
-@router.post("/text2video/generate-video-from-first-frame/{script_id}", response_model=GenerateVideoFromFirstFrameResponse)
-async def api_generate_video_from_first_frame(
+@router.post("/text2video/generate-video-from-first-and-last-frame/{script_id}", response_model=GenerateVideoFromFirstFrameResponse)
+async def api_generate_video_from_first_and_last_frame(
     script_id: str,
     request: GenerateVideoFromFirstFrameRequest,
     session: SessionDep,
     current_user: CurrentUser,
 ):
     """
-    基于首帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
+    基于首尾帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
     
     参数:
     - script_id: 剧本ID
@@ -1183,10 +1308,10 @@ async def api_generate_video_from_first_frame(
         if script.creator_id != current_user.id and script.share_perm < 2:
             raise HTTPException(status_code=403, detail="无权为此剧本生成视频")
         
-        # 触发Celery任务基于首帧图生成视频
-        from app.agent.generateVideo.tasks import generate_video_from_first_frame_task
+        # 触发Celery任务基于首尾帧图生成视频
+        from app.agent.generateVideo.tasks import generate_video_from_first_and_last_frame_task
         
-        task = generate_video_from_first_frame_task.delay(
+        task = generate_video_from_first_and_last_frame_task.delay(
             script_id=script_id,
             shot_no=request.shot_no,
             shotlist_text=request.shotlist_text,
@@ -1206,7 +1331,7 @@ async def api_generate_video_from_first_frame(
             script_id=script_id,
             shot_no=request.shot_no,
             video_path="",  # 异步生成，路径稍后通过轮询获取
-            message=f"分镜{request.shot_no}seedance视频生成任务已启动",
+            message=f"分镜{request.shot_no}seedance首尾帧视频生成任务已启动",
         )
     except ValueError:
         raise HTTPException(status_code=400, detail="无效的剧本ID")

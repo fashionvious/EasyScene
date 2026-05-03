@@ -1,19 +1,16 @@
-import { useState, useRef, useEffect } from "react"
 import { createFileRoute } from "@tanstack/react-router"
-import { useMutation } from "@tanstack/react-query"
 import {
-  Image,
-  Sparkles,
-  Loader2,
-  Download,
-  Check,
-  RefreshCw,
   AlertCircle,
+  Check,
+  Download,
+  Image,
+  Loader2,
+  RefreshCw,
+  Sparkles,
 } from "lucide-react"
-
+import { useEffect, useRef, useState } from "react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Card,
   CardContent,
@@ -21,6 +18,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -28,8 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { cn } from "@/lib/utils"
 
 // 类型定义
 interface GeneratePromptResponse {
@@ -49,13 +46,16 @@ async function generatePrompt(
   userInput: string,
   onChunk: (chunk: string) => void,
 ): Promise<string> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2image/generate-prompt`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2image/generate-prompt`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ user_input: userInput }),
     },
-    body: JSON.stringify({ user_input: userInput }),
-  })
+  )
 
   if (!response.ok) {
     throw new Error(`生成提示词失败: ${response.statusText}`)
@@ -87,13 +87,19 @@ async function modifyPrompt(
   currentPrompt: string,
   onChunk: (chunk: string) => void,
 ): Promise<string> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2image/modify-prompt`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2image/modify-prompt`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_input: userInput,
+        current_prompt: currentPrompt,
+      }),
     },
-    body: JSON.stringify({ user_input: userInput, current_prompt: currentPrompt }),
-  })
+  )
 
   if (!response.ok) {
     throw new Error(`修改提示词失败: ${response.statusText}`)
@@ -125,13 +131,16 @@ async function generateImage(
   size: string,
   n: number,
 ): Promise<GenerateImageResponse[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/text2image/generate-image`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/text2image/generate-image`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ prompt, size, n }),
     },
-    body: JSON.stringify({ prompt, size, n }),
-  })
+  )
 
   if (!response.ok) {
     throw new Error(`生成图片失败: ${response.statusText}`)
@@ -166,7 +175,9 @@ function Text2Image() {
   const [modifyInput, setModifyInput] = useState("")
 
   // 图片生成状态
-  const [generatedImages, setGeneratedImages] = useState<GenerateImageResponse[]>([])
+  const [generatedImages, setGeneratedImages] = useState<
+    GenerateImageResponse[]
+  >([])
   const [isGeneratingImage, setIsGeneratingImage] = useState(false)
 
   // 错误提示
@@ -180,7 +191,7 @@ function Text2Image() {
     if (promptDisplayRef.current && isStreamingPrompt) {
       promptDisplayRef.current.scrollTop = promptDisplayRef.current.scrollHeight
     }
-  }, [generatedPrompt, isStreamingPrompt])
+  }, [isStreamingPrompt])
 
   // 重置状态
   const resetState = () => {
@@ -233,7 +244,7 @@ function Text2Image() {
       const images = await generateImage(
         generatedPrompt,
         imageSize,
-        parseInt(imageCount),
+        parseInt(imageCount, 10),
       )
       setGeneratedImages(images)
     } catch (err) {
@@ -279,7 +290,7 @@ function Text2Image() {
       a.click()
       document.body.removeChild(a)
       window.URL.revokeObjectURL(url)
-    } catch (err) {
+    } catch (_err) {
       setError("下载图片失败")
     }
   }
@@ -399,9 +410,7 @@ function Text2Image() {
               className="min-h-[100px] max-h-[200px] overflow-y-auto bg-muted/50 p-4 rounded-lg font-mono text-sm whitespace-pre-wrap"
             >
               {generatedPrompt || (
-                <span className="text-muted-foreground">
-                  正在生成提示词...
-                </span>
+                <span className="text-muted-foreground">正在生成提示词...</span>
               )}
               {isStreamingPrompt && (
                 <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
@@ -446,7 +455,9 @@ function Text2Image() {
               <Button
                 variant="secondary"
                 onClick={handleModify}
-                disabled={isStreamingPrompt || isGeneratingImage || !modifyInput.trim()}
+                disabled={
+                  isStreamingPrompt || isGeneratingImage || !modifyInput.trim()
+                }
                 className="flex-1"
               >
                 {isStreamingPrompt ? (

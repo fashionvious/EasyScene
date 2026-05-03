@@ -37,7 +37,9 @@ function ItemsTableContent() {
           <Search className="h-8 w-8 text-primary" />
         </div>
         <h3 className="heading-feature mb-2">You don't have any items yet</h3>
-        <p className="text-muted-foreground text-body-semibold">Add a new item to get started</p>
+        <p className="text-muted-foreground text-body-semibold">
+          Add a new item to get started
+        </p>
       </div>
     )
   }
@@ -59,7 +61,9 @@ function Items() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="heading-card mb-2">Items</h1>
-          <p className="text-muted-foreground text-body-semibold">Create and manage your items</p>
+          <p className="text-muted-foreground text-body-semibold">
+            Create and manage your items
+          </p>
         </div>
         <AddItem />
       </div>

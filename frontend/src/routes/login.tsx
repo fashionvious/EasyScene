@@ -104,7 +104,9 @@ function Login() {
               render={({ field }) => (
                 <FormItem>
                   <div className="flex items-center">
-                    <FormLabel className="text-body-semibold">Password</FormLabel>
+                    <FormLabel className="text-body-semibold">
+                      Password
+                    </FormLabel>
                     <RouterLink
                       to="/recover-password"
                       className="ml-auto text-caption text-primary hover:underline underline-offset-4"
@@ -124,14 +126,21 @@ function Login() {
               )}
             />
 
-            <LoadingButton type="submit" loading={loginMutation.isPending} size="lg">
+            <LoadingButton
+              type="submit"
+              loading={loginMutation.isPending}
+              size="lg"
+            >
               Log In
             </LoadingButton>
           </div>
 
           <div className="text-center text-caption">
             Don't have an account yet?{" "}
-            <RouterLink to="/signup" className="text-primary hover:underline underline-offset-4 font-semibold">
+            <RouterLink
+              to="/signup"
+              className="text-primary hover:underline underline-offset-4 font-semibold"
+            >
               Sign up
             </RouterLink>
           </div>

@@ -96,7 +96,9 @@ function SignUp() {
               name="full_name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className="text-body-semibold">Full Name</FormLabel>
+                  <FormLabel className="text-body-semibold">
+                    Full Name
+                  </FormLabel>
                   <FormControl>
                     <Input
                       data-testid="full-name-input"
@@ -152,7 +154,9 @@ function SignUp() {
               name="confirm_password"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className="text-body-semibold">Confirm Password</FormLabel>
+                  <FormLabel className="text-body-semibold">
+                    Confirm Password
+                  </FormLabel>
                   <FormControl>
                     <PasswordInput
                       data-testid="confirm-password-input"
@@ -177,7 +181,10 @@ function SignUp() {
 
           <div className="text-center text-caption">
             Already have an account?{" "}
-            <RouterLink to="/login" className="text-primary hover:underline underline-offset-4 font-semibold">
+            <RouterLink
+              to="/login"
+              className="text-primary hover:underline underline-offset-4 font-semibold"
+            >
               Log in
             </RouterLink>
           </div>

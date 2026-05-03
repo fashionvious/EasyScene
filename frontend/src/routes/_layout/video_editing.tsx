@@ -1,6 +1,11 @@
-import { createFileRoute, Outlet, useParams, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { FolderOpen, Loader2, Film } from "lucide-react"
+import {
+  createFileRoute,
+  Outlet,
+  useNavigate,
+  useParams,
+} from "@tanstack/react-router"
+import { Film, FolderOpen, Loader2 } from "lucide-react"
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 
@@ -61,7 +66,11 @@ function VideoEditingLayout() {
 
 function VideoEditingList() {
   const navigate = useNavigate()
-  const { data: scriptListData, isLoading, error } = useQuery({
+  const {
+    data: scriptListData,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ["scriptList"],
     queryFn: getScriptList,
     staleTime: 0,
