@@ -99,7 +99,7 @@ class VideoGenerationAgent:
                 logger.warning(f"分镜{shot_no}的六宫格图片base64编码失败")
                 return {"shot_no": shot_no, "video_path": "", "error": "六宫格图片base64编码失败"}
 
-            prompt = f"请根据我给你的六宫格分镜头图片，以及分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当"
+            prompt = f"请根据我给你的六宫格分镜头图片，以及分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系"
 
             video_path = self._generate_video_with_api(
                 prompt=prompt,
@@ -271,7 +271,7 @@ class VideoGenerationAgent:
                 logger.warning(f"分镜{shot_no}的首帧图base64编码失败")
                 return {"shot_no": shot_no, "video_path": "", "error": "首帧图base64编码失败"}
 
-            prompt = f"请根据首帧图片和分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当 --resolution 480p --duration 10 --camerafixed false --watermark false"
+            prompt = f"请根据首帧图片和分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false"
 
             video_path = self._generate_video_with_seedance_api(
                 prompt=prompt,
@@ -438,7 +438,7 @@ class VideoGenerationAgent:
                 logger.warning(f"分镜{shot_no}的尾帧图base64编码失败")
                 return {"shot_no": shot_no, "video_path": "", "error": "尾帧图base64编码失败"}
 
-            prompt = f"请根据首帧图和尾帧图，以及分镜头脚本{shotlist_text}生成视频，视频需从首帧画面平滑过渡到尾帧画面，保持角色、场景、整体风格氛围与首尾帧一致，运镜流畅恰当 --resolution 480p --duration 10 --camerafixed false --watermark false"
+            prompt = f"请根据首帧图和尾帧图，以及分镜头脚本{shotlist_text}生成视频，视频需从首帧画面平滑过渡到尾帧画面，保持角色、场景、整体风格氛围与首尾帧一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false"
 
             video_path = self._generate_video_with_seedance_first_last_frame_api(
                 prompt=prompt,

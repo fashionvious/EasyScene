@@ -1318,7 +1318,7 @@ function ScriptDetail() {
                           ) : (
                             <>
                               <Sparkles className="h-4 w-4 mr-1" />
-                              提交场景组
+                              生成场景图
                             </>
                           )}
                         </Button>
