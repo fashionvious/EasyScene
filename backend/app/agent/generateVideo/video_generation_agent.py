@@ -222,8 +222,8 @@ class VideoGenerationAgent:
             return ""
 
     def _find_first_frame_image(self, video_output_dir: Path, shot_no: int) -> str:
-        """查找指定分镜的首帧图"""
-        first_frame_images = list(video_output_dir.glob(f"*_{shot_no}_*_ff.png"))
+        """查找指定分镜的首帧图，文件命名格式: {script_name}_{scene_group_no}_{shot_no}_{timestamp}_ff.png"""
+        first_frame_images = list(video_output_dir.glob(f"*_*_{shot_no}_*_ff.png"))
         if first_frame_images:
             first_frame_images.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             logger.info(f"找到分镜{shot_no}的首帧图: {first_frame_images[0]}")
@@ -239,7 +239,7 @@ class VideoGenerationAgent:
         global_seed: int = 0,
     ) -> Dict[str, Any]:
         """
-        基于首帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
+        基于首帧图生成视频（使用doubao-seedance-1-5-pro-251215模型）
 
         参数:
         - shot_no: 分镜号
@@ -271,7 +271,7 @@ class VideoGenerationAgent:
                 logger.warning(f"分镜{shot_no}的首帧图base64编码失败")
                 return {"shot_no": shot_no, "video_path": "", "error": "首帧图base64编码失败"}
 
-            prompt = f"请根据首帧图片和分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false"
+            prompt = f"请根据首帧图片和分镜头脚本{shotlist_text}生成视频，保持角色、场景、整体风格氛围和图片中一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false --audio true"
 
             video_path = self._generate_video_with_seedance_api(
                 prompt=prompt,
@@ -300,7 +300,7 @@ class VideoGenerationAgent:
         script_name: str,
         video_output_dir: Path,
     ) -> str:
-        """使用火山方舟 Ark SDK (doubao-seedance-1-0-pro-250528模型) 基于首帧图生成视频"""
+        """使用火山方舟 Ark SDK (doubao-seedance-1-5-pro-251215模型) 基于首帧图生成视频"""
         import time
 
         try:
@@ -311,10 +311,10 @@ class VideoGenerationAgent:
                 api_key=self.ark_api_key,
             )
 
-            logger.info(f"调用Seedance API生成视频，分镜: {shot_no}, 模型: doubao-seedance-1-0-pro-250528")
+            logger.info(f"调用Seedance API生成视频，分镜: {shot_no}, 模型: doubao-seedance-1-5-pro-251215")
 
             create_result = client.content_generation.tasks.create(
-                model="doubao-seedance-1-0-pro-250528",
+                model="doubao-seedance-1-5-pro-251215",
                 content=[
                     {
                         "type": "text",
@@ -379,8 +379,8 @@ class VideoGenerationAgent:
             return ""
 
     def _find_last_frame_image(self, video_output_dir: Path, shot_no: int) -> str:
-        """查找指定分镜的尾帧图"""
-        last_frame_images = list(video_output_dir.glob(f"*_{shot_no}_*_lf.png"))
+        """查找指定分镜的尾帧图，文件命名格式: {script_name}_{scene_group_no}_{shot_no}_{timestamp}_lf.png"""
+        last_frame_images = list(video_output_dir.glob(f"*_*_{shot_no}_*_lf.png"))
         if last_frame_images:
             last_frame_images.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             logger.info(f"找到分镜{shot_no}的尾帧图: {last_frame_images[0]}")
@@ -396,7 +396,7 @@ class VideoGenerationAgent:
         global_seed: int = 0,
     ) -> Dict[str, Any]:
         """
-        基于首帧图和尾帧图生成视频（使用doubao-seedance-1-0-pro-250528模型）
+        基于首帧图和尾帧图生成视频（使用doubao-seedance-1-5-pro-251215模型）
 
         参数:
         - shot_no: 分镜号
@@ -438,7 +438,7 @@ class VideoGenerationAgent:
                 logger.warning(f"分镜{shot_no}的尾帧图base64编码失败")
                 return {"shot_no": shot_no, "video_path": "", "error": "尾帧图base64编码失败"}
 
-            prompt = f"请根据首帧图和尾帧图，以及分镜头脚本{shotlist_text}生成视频，视频需从首帧画面平滑过渡到尾帧画面，保持角色、场景、整体风格氛围与首尾帧一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false"
+            prompt = f"请根据首帧图和尾帧图，以及分镜头脚本{shotlist_text}生成视频，视频需从首帧画面平滑过渡到尾帧画面，保持角色、场景、整体风格氛围与首尾帧一致，运镜流畅恰当。重要：当场景中有多个角色对话时，角色之间必须自然地对视，目光看向对话对象而非镜头，呈现真实的对话视线关系 --resolution 480p --duration 10 --camerafixed false --watermark false --audio true"
 
             video_path = self._generate_video_with_seedance_first_last_frame_api(
                 prompt=prompt,
@@ -450,7 +450,7 @@ class VideoGenerationAgent:
             )
 
             if video_path:
-                logger.info(f"分镜{shot_no}的seedance首尾帧视频生成完成，视频路径: {video_path}")
+                logger.info(f"分镜{shot_no}的seedance首尾帧视频生成完成，视频路径: {video_path} 分镜头脚本内容:{shotlist_text}")
                 return {"shot_no": shot_no, "video_path": video_path}
             else:
                 logger.warning(f"分镜{shot_no}的seedance首尾帧视频生成失败")
@@ -469,7 +469,7 @@ class VideoGenerationAgent:
         script_name: str,
         video_output_dir: Path,
     ) -> str:
-        """使用火山方舟 Ark SDK (doubao-seedance-1-0-pro-250528模型) 基于首尾帧生成视频"""
+        """使用火山方舟 Ark SDK (doubao-seedance-1-5-pro-251215模型) 基于首尾帧生成视频"""
         import time
 
         try:
@@ -480,10 +480,10 @@ class VideoGenerationAgent:
                 api_key=self.ark_api_key,
             )
 
-            logger.info(f"调用Seedance首尾帧API生成视频，分镜: {shot_no}, 模型: doubao-seedance-1-0-pro-250528")
+            logger.info(f"调用Seedance首尾帧API生成视频，分镜: {shot_no}, 模型: doubao-seedance-1-5-pro-251215")
 
             create_result = client.content_generation.tasks.create(
-                model="doubao-seedance-1-0-pro-250528",
+                model="doubao-seedance-1-5-pro-251215",
                 content=[
                     {
                         "type": "text",
