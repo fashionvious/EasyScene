@@ -138,7 +138,7 @@ services:
       # Enable redirection for HTTP and HTTPS
       - traefik.http.routers.${STACK_NAME?Variable not set}-backend-http.middlewares=https-redirect
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: "no" # 与你当前开发环境配置保持一致
     ports:
       - "6379:6379"
