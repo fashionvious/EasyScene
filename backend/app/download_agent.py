@@ -1,0 +1,34 @@
+import base64
+import os
+
+    #Base64编码的内容（从容器中复制）
+base64_content = """IyBBSSBBZ2VudCDlupTnlKjlvIDlj5HmioDmnK/pnaLor5XpopjmsYfmgLsKCuacrOaWh+aho+aV
+tOeQhuS6hkFJIEFnZW505bqU55So5byA5Y+R55u45YWz55qE5oqA5pyv6Z2i6K+V6aKY77yM5ra1
+55uW5bel5L2c5rWB44CBQWdlbnTjgIFSQUfjgIHlt6XnqIvlnLrmma/popjjgIHkuLvmtYHmoYbm
+nrbjgIHng63pl6hBZ2VudOetie+8jOS7pemimOebri3nrZTmoYjlr7nlvaLlvI/lkYjnjrDvvIzn
+rZTmoYjpg6jliIbljIXlkKvop6PmnpDvvIzlipvmsYLpgJrkv5fmmJPmh4LjgIIKCiMjIOebruW9
+lQoKMS4gW0xhbmdDaGFpbuahhuaetuevh10oI2xhbmdjaGFpbuahhuaetuevhykKMi4gW1JBR++8
+iOajgOe0ouWinuW8uueUn+aIkO+8ieevh10oI3JhZ+ajgOe0ouWinuW8uueUn+aIkOevhykKMy4g
+W0FnZW505bel5L2c5rWB56+HXSgjYWdlbnTlt6XkvZzmtYHnr4cpCjQuIFvlt6XnqIvlnLrmma/p
+opjnr4ddKCPlt6XnqIvlnLrmma/popjnr4cpCjUuIFvkuLvmtYHmoYbmnrblr7nmr5Tnr4ddKCPk
+uLvmtYHmoYbmnrblr7nmr5Tnr4cpCjYuIFvng63pl6hBZ2VudOW6lOeUqOevh10oI+eDremXqGFn
+ZW505bqU55So56+HKQoKLS0tCgojIyBMYW5nQ2hhaW7moYbmnrbnr4cKCiMjIyAxLiBMYW5nQ2hh
+aW4gQWdlbnQg5qGG5p6255qE5qC45b+D57uE5Lu25pyJ5ZOq5Lqb77yf5a6D5Lus5aaC5L2V5Y2P
+5L2c77yfCgoqKuWPguiAg+etlOahiO+8mioqCgoqKuaguOW/g+e7hOS7tu+8mioqCjEuICoqTExN
+L0NoYXRNb2RlbCoqIC0g5bCB6KOF5ZCE56eN5aSn5qih5Z6L77yIT3BlbkFJ44CBQW50aHJvcGlj
+44CB5pys5Zyw5qih5Z6L562J77yJ77yM5o+Q5L6b57uf5LiA55qE6LCD55So5o6l5Y+j77yM5pSv
+5oyB5rWB5byP6L6T5Ye65ZKM5byC5q2l6LCD55SoCjIuICoqVG9vbHPvvIjlt6XlhbfvvIkqKiAt
+IOWumuS5ieWPr+iwg+eUqOeahOW3peWFt+aOpeWPo++8jOmbhuaIkOWklumDqOW3peWFt++8iOaQ
+nOe0ouOAgeiuoeeul+WZqOOAgUFQSeetie+8ie+8jOW3peWFt+aPj+i/sOWSjOWPguaVsOWumuS5
+iQozLiAqKkFnZW5077yI5pm66IO95L2T77yJKiogLSDkuI3lkIznsbvlnovnmoRBZ2VudOWunueO
+sO+8jOW3peWFt+mAieaLqeWSjOaJp+ihjOmAu+i+ke+8jOS4jkxMTeWSjFRvb2xz5Lqk5LqSCjQu"""
+
+#解码并保存
+decoded = base64.b64decode(base64_content)
+save_path = r"D:\agent_interview_questions.md"
+
+with open(save_path, 'wb') as f:
+    f.write(decoded)
+
+print(f"文件已保存到: {save_path}")
+print(f"文件大小: {len(decoded)} bytes")
