@@ -1,0 +1,21 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Creating new project: 缉凶者视频拼接
+第一个视频时长: 0
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpq3o703fv.py", line 61, in <module>
+    project.add_media_safe("D:\\1-6 AI_Agent\\2_local_project\\EasyScene\\backend\\47d8edbd-5299-4917-be75-1f36396b156d\\generated_images\\缉凶者6_5_20260504_074040.mp4", t1)
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\core\media_ops.py", line 42, in add_media_safe
+    return self._add_video_safe(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\core\media_ops.py", line 114, in _add_video_safe
+    self.script.add_segment(seg, track_name)
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\vendor\pyJianYingDraft\script_file.py", line 307, in add_segment
+    target.add_segment(segment)
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\vendor\pyJianYingDraft\track.py", line 118, in add_segment
+    raise SegmentOverlap("New segment overlaps with existing segment [start: {}, end: {}]"
+pyJianYingDraft.exceptions.SegmentOverlap: New segment overlaps with existing segment [start: 0, end: 10042000]
+
