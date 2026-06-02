@@ -2,7 +2,6 @@
 文生视频业务逻辑层
 包含 DB 操作、Redis 操作、工作流恢复逻辑，与 Celery 解耦，可独立测试和复用
 """
-import os
 import asyncio
 import logging
 import uuid
@@ -30,13 +29,11 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def build_db_uri() -> str:
-    """从环境变量构建数据库连接字符串"""
-    postgres_server = os.getenv("POSTGRES_SERVER", "localhost")
-    postgres_port = os.getenv("POSTGRES_PORT", "5432")
-    postgres_db = os.getenv("POSTGRES_DB", "app")
-    postgres_user = os.getenv("POSTGRES_USER", "postgres")
-    postgres_password = os.getenv("POSTGRES_PASSWORD", "changethis")
-    return f"postgresql://{postgres_user}:{postgres_password}@{postgres_server}:{postgres_port}/{postgres_db}"
+    """从 settings 构建数据库连接字符串，与业务数据库保持一致"""
+    from app.core.config import settings
+    # settings.SQLALCHEMY_DATABASE_URI 返回 postgresql+psycopg://user:pass@host:port/db
+    # AsyncPostgresSaver 需要 postgresql:// 前缀
+    return str(settings.SQLALCHEMY_DATABASE_URI).replace("postgresql+psycopg://", "postgresql://")
 
 
 def resolve_db_uri(db_uri: Optional[str] = None) -> str:

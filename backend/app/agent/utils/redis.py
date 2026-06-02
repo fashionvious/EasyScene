@@ -746,7 +746,7 @@ class VideoProjectRedisManager:
 def get_video_project_manager() -> VideoProjectRedisManager:
     """
     获取视频项目Redis管理器实例
-    
+
     Returns:
         VideoProjectRedisManager: 管理器实例
     """
@@ -756,6 +756,245 @@ def get_video_project_manager() -> VideoProjectRedisManager:
         redis_db=RedisConfig.REDIS_DB,
         redis_password=RedisConfig.REDIS_PASSWORD
     )
-    
+
     logger.info("视频项目Redis管理器初始化成功")
     return manager
+
+
+# ============================================================================
+# EditTaskState 编辑任务实时状态（新增）
+# ============================================================================
+
+class EditTaskStatus(str, Enum):
+    PLANNING = "planning"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class EditTaskState(BaseModel):
+    """编辑任务实时状态（Redis String，TTL 72h）。
+
+    PG 存永久记录（edit_task / edit_step），Redis 存实时状态，
+    前端通过轮询 GET /edit/{task_id}/progress 从 Redis 读取。
+    """
+    task_id: str = Field(..., description="任务唯一标识")
+    user_id: str = Field(..., description="用户ID")
+    script_id: str = Field(..., description="关联的剧本ID")
+    status: str = Field(default="planning", description="planning|running|paused|completed|failed")
+    current_step: int = Field(default=0, description="当前执行到第几步")
+    total_steps: int = Field(default=0, description="总步骤数")
+    step_name: str = Field(default="", description="当前步骤名称")
+    step_status: str = Field(default="pending", description="当前步骤状态")
+    progress_pct: float = Field(default=0.0, description="当前步骤进度百分比")
+    celery_task_id: str | None = Field(default=None, description="关联的 Celery 任务ID")
+    error_message: str | None = Field(default=None, description="最近错误信息")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据（如 preview_path）")
+    updated_at: float = Field(default_factory=time.time, description="最后更新时间戳")
+
+
+class EditTaskRedisManager:
+    """编辑任务 Redis 状态管理器。
+
+    复用现有 RedisConfig 的连接参数，通过 redis_client 注入。
+    PG 存永久记录，Redis 存实时状态（TTL 72h 自动过期）。
+    """
+
+    TASK_TTL = 86400 * 3      # 72 小时
+    KEY_PREFIX = "edit_task"
+
+    def __init__(self, redis_client: redis.Redis):
+        self.redis = redis_client
+
+    # ---- 核心 CRUD ----
+
+    async def create_task_state(self, state: EditTaskState) -> bool:
+        """创建任务实时状态"""
+        try:
+            key = f"{self.KEY_PREFIX}:{state.task_id}"
+            await self.redis.set(
+                key, state.model_dump_json(), ex=self.TASK_TTL,
+            )
+            logger.info("[EditTaskRedis] 创建任务状态: %s", state.task_id)
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] create_task_state 失败: %s", e)
+            return False
+
+    async def get_task_state(self, task_id: str) -> EditTaskState | None:
+        """获取任务实时状态"""
+        try:
+            key = f"{self.KEY_PREFIX}:{task_id}"
+            data = await self.redis.get(key)
+            if not data:
+                return None
+            return EditTaskState.model_validate_json(data)
+        except Exception as e:
+            logger.warning("[EditTaskRedis] get_task_state 失败: %s", e)
+            return None
+
+    async def update_task_state(
+        self, task_id: str, **kwargs: Any,
+    ) -> bool:
+        """部分更新任务状态（仅更新传入的字段）"""
+        try:
+            state = await self.get_task_state(task_id)
+            if not state:
+                return False
+
+            for field, value in kwargs.items():
+                if hasattr(state, field):
+                    setattr(state, field, value)
+
+            state.updated_at = time.time()
+            key = f"{self.KEY_PREFIX}:{task_id}"
+            await self.redis.set(
+                key, state.model_dump_json(), ex=self.TASK_TTL,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] update_task_state 失败: %s", e)
+            return False
+
+    async def update_step_progress(
+        self, task_id: str, step_index: int, step_name: str,
+        step_status: str, progress_pct: float,
+    ) -> bool:
+        """便捷方法：更新当前步骤进度"""
+        return await self.update_task_state(
+            task_id=task_id,
+            current_step=step_index,
+            step_name=step_name,
+            step_status=step_status,
+            progress_pct=progress_pct,
+        )
+
+    async def set_error(self, task_id: str, error: str) -> bool:
+        """记录错误并标记任务为 failed"""
+        return await self.update_task_state(
+            task_id=task_id, error_message=error, status="failed",
+        )
+
+    async def set_celery_task_id(self, task_id: str, celery_task_id: str) -> bool:
+        """关联 Celery 任务 ID"""
+        return await self.update_task_state(
+            task_id=task_id, celery_task_id=celery_task_id,
+        )
+
+    async def set_metadata(self, task_id: str, key: str, value: Any) -> bool:
+        """设置扩展元数据（如 preview_path）"""
+        try:
+            state = await self.get_task_state(task_id)
+            if not state:
+                return False
+            state.metadata[key] = value
+            state.updated_at = time.time()
+            redis_key = f"{self.KEY_PREFIX}:{task_id}"
+            await self.redis.set(
+                redis_key, state.model_dump_json(), ex=self.TASK_TTL,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] set_metadata 失败: %s", e)
+            return False
+
+    async def delete_task_state(self, task_id: str) -> bool:
+        """任务完成后清理实时状态"""
+        try:
+            key = f"{self.KEY_PREFIX}:{task_id}"
+            await self.redis.delete(key)
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] delete_task_state 失败: %s", e)
+            return False
+
+    # ---- 用户待决策队列 (user pending queue) ----
+
+    PENDING_PREFIX = "edit_pending"
+    PENDING_TTL = 86400 * 3  # 72 小时
+
+    async def add_user_pending(
+        self, user_id: str, task_id: str,
+        step_index: int, error: str,
+    ) -> bool:
+        """将任务添加到用户待决策队列。sadd 保证幂等去重。"""
+        try:
+            pending_key = f"{self.PENDING_PREFIX}:{user_id}"
+            data = json.dumps({
+                "task_id": task_id,
+                "step_index": step_index,
+                "error": error[:500],
+                "created_at": time.time(),
+            })
+            await self.redis.sadd(pending_key, task_id)
+            await self.redis.set(
+                f"{self.PENDING_PREFIX}:detail:{task_id}",
+                data, ex=self.PENDING_TTL,
+            )
+            await self.redis.expire(pending_key, self.PENDING_TTL)
+            logger.info(
+                "[EditTaskRedis] 添加待决策: user=%s task=%s step=%s",
+                user_id, task_id, step_index,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] add_user_pending 失败: %s", e)
+            return False
+
+    async def remove_user_pending(
+        self, user_id: str, task_id: str,
+    ) -> bool:
+        """用户处理完成后移除待决策项"""
+        try:
+            pending_key = f"{self.PENDING_PREFIX}:{user_id}"
+            await self.redis.srem(pending_key, task_id)
+            await self.redis.delete(f"{self.PENDING_PREFIX}:detail:{task_id}")
+            return True
+        except Exception as e:
+            logger.warning("[EditTaskRedis] remove_user_pending 失败: %s", e)
+            return False
+
+    async def get_user_pending(self, user_id: str) -> list[dict]:
+        """获取用户的待决策任务列表（自动清理过期项）"""
+        try:
+            pending_key = f"{self.PENDING_PREFIX}:{user_id}"
+            task_ids = await self.redis.smembers(pending_key)
+            items: list[dict] = []
+            for tid in task_ids:
+                detail = await self.redis.get(
+                    f"{self.PENDING_PREFIX}:detail:{tid}",
+                )
+                if detail:
+                    items.append(json.loads(detail))
+                else:
+                    await self.redis.srem(pending_key, tid)
+            return items
+        except Exception as e:
+            logger.warning("[EditTaskRedis] get_user_pending 失败: %s", e)
+            return []
+
+    async def get_pending_count(self, user_id: str) -> int:
+        """获取待决策任务数量（供前端 badge 显示）"""
+        try:
+            pending_key = f"{self.PENDING_PREFIX}:{user_id}"
+            return await self.redis.scard(pending_key)
+        except Exception as e:
+            logger.warning("[EditTaskRedis] get_pending_count 失败: %s", e)
+            return 0
+
+
+# ============================================================================
+# EditTask 工厂函数
+# ============================================================================
+
+def get_edit_task_redis_manager() -> EditTaskRedisManager:
+    """获取编辑任务 Redis 管理器实例"""
+    client = redis.Redis(
+        host=RedisConfig.REDIS_HOST,
+        port=RedisConfig.REDIS_PORT,
+        db=RedisConfig.REDIS_DB,
+        password=RedisConfig.REDIS_PASSWORD,
+        decode_responses=True,
+    )
+    return EditTaskRedisManager(client)

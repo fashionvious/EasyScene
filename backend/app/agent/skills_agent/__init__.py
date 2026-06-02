@@ -39,27 +39,36 @@ from .jianying_agent import (
     run_jianying_agent
 )
 
+from .tool_registry import (
+    ToolSpec,
+    ToolRegistry,
+)
+
 __all__ = [
     # Skill 解析器
     "Skill",
     "SkillParser",
     "load_jianying_skill",
-    
+
     # CLI 执行器
     "SCRIPT_REGISTRY",
     "CLIScriptExecutor",
     "create_cli_executor_tool",
-    
+
     # Python 执行器
     "PythonCodeExecutor",
     "create_python_executor_tool",
     "CODE_TEMPLATES",
     "get_code_template",
-    
+
     # 媒体解析器
     "MediaResolver",
     "create_media_resolver_tool",
-    
+
+    # 工具注册表
+    "ToolSpec",
+    "ToolRegistry",
+
     # Agent
     "JianYingSkillMiddleware",
     "create_jianying_agent",

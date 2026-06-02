@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Recurse -File \"d:\\\\1-6 AI_Agent\\\\2_local_project\\\\EasyScene\\\\docs\\\\src\\\\coordinator\" | ForEach-Object { \"{0,10:N0}`t{1}\" -f $_.Length, $_.FullName } | Sort-Object { [int]\\($_.Split\\(\"`t\"\\)[0].Trim\\(\\)\\) } -Descending)",
+      "PowerShell(Get-ChildItem -Directory \"d:\\\\1-6 AI_Agent\\\\2_local_project\\\\EasyScene\\\\docs\\\\src\\\\tools\" | Sort-Object Name | ForEach-Object { $_.Name })"
+    ]
+  }
+}

@@ -4,9 +4,26 @@
 import os
 import subprocess
 import json
+import time
+import logging
 from typing import Optional, Any
 from pathlib import Path
 from langchain.tools import tool
+
+try:
+    from .utils.timeout_config import truncate_output
+except ImportError:
+    from utils.timeout_config import truncate_output
+
+logger = logging.getLogger(__name__)
+
+# 可重试的进程退出码——仅白名单中的退出码触发重试
+# 不包含 2(ENOENT) 和 22(EINVAL) 等参数错误码
+RETRYABLE_RETURN_CODES = frozenset({
+    1,    # 一般错误（多数 CLI 工具的默认错误码）
+    137,  # SIGKILL（OOM killer）
+    139,  # SIGSEGV
+})
 
 
 # 脚本注册表 - 定义可用的脚本及其参数
@@ -133,52 +150,17 @@ class CLIScriptExecutor:
             
         return "\n".join(result)
     
-    def execute(
-        self,
-        script_name: str,
-        args: dict[str, Any],
-        timeout: int = 300
-    ) -> dict[str, Any]:
-        """
-        执行指定的脚本
-        
-        Args:
-            script_name: 脚本名称
-            args: 脚本参数
-            timeout: 超时时间（秒）
-            
-        Returns:
-            执行结果，包含 success, output, error 等字段
-        """
-        # 检查脚本是否注册
-        if script_name not in SCRIPT_REGISTRY:
-            return {
-                "success": False,
-                "error": f"未知的脚本: {script_name}",
-                "available_scripts": list(SCRIPT_REGISTRY.keys())
-            }
-        
-        # 获取脚本信息
+    def _build_cmd(self, script_name: str, args: dict[str, Any]) -> list[str]:
+        """构建命令行参数"""
         script_info = SCRIPT_REGISTRY[script_name]
         script_path = self.scripts_dir / script_info["script"]
-        
-        # 检查脚本文件是否存在
-        if not script_path.exists():
-            return {
-                "success": False,
-                "error": f"脚本文件不存在: {script_path}"
-            }
-        
-        # 构建命令
         cmd = ["python", str(script_path)]
-        
-        # 根据脚本类型添加参数
+
         if script_name == "asset_search":
             if "query" in args:
                 cmd.append(args["query"])
             if "category" in args:
                 cmd.extend(["-c", args["category"]])
-                
         elif script_name == "auto_exporter":
             if "draft_name" in args:
                 cmd.append(args["draft_name"])
@@ -188,7 +170,6 @@ class CLIScriptExecutor:
                 cmd.extend(["--res", str(args["resolution"])])
             if "framerate" in args:
                 cmd.extend(["--fps", str(args["framerate"])])
-                
         elif script_name == "draft_inspector":
             action = args.get("action", "list")
             cmd.append(action)
@@ -201,23 +182,19 @@ class CLIScriptExecutor:
                         cmd.extend(["--kind", args["kind"]])
                     if args.get("json"):
                         cmd.append("--json")
-                        
         elif script_name == "movie_commentary_builder":
             if "video" in args:
                 cmd.extend(["--video", args["video"]])
             if "json" in args:
                 cmd.extend(["--json", args["json"]])
-                
         elif script_name == "smart_zoomer":
             if "video" in args:
                 cmd.extend(["--video", args["video"]])
             if "events_json" in args:
                 cmd.extend(["--events", args["events_json"]])
-                
         elif script_name == "smart_rough_cut":
             if "video" in args:
                 cmd.extend(["--video", args["video"]])
-                
         elif script_name == "universal_tts":
             if "text" in args:
                 cmd.extend(["--text", args["text"]])
@@ -225,7 +202,6 @@ class CLIScriptExecutor:
                 cmd.extend(["--output", args["output"]])
             if "speaker" in args:
                 cmd.extend(["--speaker", args["speaker"]])
-                
         elif script_name == "web_recorder":
             if "url" in args:
                 cmd.extend(["--url", args["url"]])
@@ -233,42 +209,169 @@ class CLIScriptExecutor:
                 cmd.extend(["--duration", str(args["duration"])])
             if "output" in args:
                 cmd.extend(["--output", args["output"]])
-        
-        # 执行命令
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(self.scripts_dir)
-            )
-            
-            # 尝试解析 JSON 输出
-            output = result.stdout.strip()
+
+        return cmd
+
+    def execute(
+        self,
+        script_name: str,
+        args: dict[str, Any],
+        timeout: int = 300,
+        max_retries: int = 0,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        执行指定的脚本
+
+        Args:
+            script_name: 脚本名称
+            args: 脚本参数
+            timeout: 超时时间（秒）
+            max_retries: 最大重试次数（默认 0 = 不重试）
+            trace_id: Langfuse trace_id，用于关联手动 span 到父 trace
+
+        Returns:
+            执行结果，包含 success, output, error 等字段
+        """
+        if script_name not in SCRIPT_REGISTRY:
+            return {
+                "success": False,
+                "error": f"未知的脚本: {script_name}",
+                "available_scripts": list(SCRIPT_REGISTRY.keys()),
+            }
+
+        script_path = self.scripts_dir / SCRIPT_REGISTRY[script_name]["script"]
+        if not script_path.exists():
+            return {
+                "success": False,
+                "error": f"脚本文件不存在: {script_path}",
+            }
+
+        cmd = self._build_cmd(script_name, args)
+
+        # 手动 span：LangChain 无法覆盖的 subprocess 调用
+        langfuse_span = None
+        if trace_id:
             try:
-                parsed_output = json.loads(output)
-            except json.JSONDecodeError:
-                parsed_output = output
-            
-            return {
-                "success": result.returncode == 0,
-                "output": parsed_output,
-                "raw_output": output,
-                "error": result.stderr.strip() if result.returncode != 0 else None,
-                "returncode": result.returncode
-            }
-            
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "error": f"脚本执行超时（{timeout}秒）"
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"执行失败: {str(e)}"
-            }
+                from .observability import get_langfuse_client
+            except ImportError:
+                from observability import get_langfuse_client
+            langfuse = get_langfuse_client()
+            if langfuse:
+                langfuse_span = langfuse.span(
+                    trace_id=trace_id,
+                    name=f"cli_execute:{script_name}",
+                    input={"script": script_name, "args": args},
+                )
+
+        last_error = None
+        total_attempts = max(1, max_retries + 1)
+
+        for attempt in range(total_attempts):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=str(self.scripts_dir),
+                )
+
+                if result.returncode == 0:
+                    output = result.stdout.strip()
+                    try:
+                        parsed_output = json.loads(output)
+                    except json.JSONDecodeError:
+                        parsed_output = truncate_output(output)
+
+                    if langfuse_span:
+                        langfuse_span.update(
+                            output={"success": True, "returncode": 0},
+                        )
+                        langfuse_span.end()
+
+                    return {
+                        "success": True,
+                        "output": parsed_output,
+                        "raw_output": truncate_output(output),
+                        "error": None,
+                        "returncode": 0,
+                    }
+
+                # 不可重试的错误码 → 立即返回
+                if result.returncode not in RETRYABLE_RETURN_CODES:
+                    if langfuse_span:
+                        langfuse_span.update(
+                            level="ERROR",
+                            output={
+                                "success": False,
+                                "returncode": result.returncode,
+                            },
+                            status_message=truncate_output(
+                                result.stderr.strip()
+                            ),
+                        )
+                        langfuse_span.end()
+
+                    return {
+                        "success": False,
+                        "output": None,
+                        "raw_output": truncate_output(result.stdout.strip()),
+                        "error": truncate_output(result.stderr.strip()),
+                        "returncode": result.returncode,
+                    }
+
+                # 可重试的错误码 → 记录并等待
+                last_error = (
+                    f"returncode={result.returncode}, "
+                    f"stderr={truncate_output(result.stderr.strip())}"
+                )
+                logger.warning(
+                    "[attempt %d/%d] %s failed: %s",
+                    attempt + 1, total_attempts, script_name, last_error,
+                )
+
+            except subprocess.TimeoutExpired:
+                last_error = f"timeout({timeout}s)"
+                logger.warning(
+                    "[attempt %d/%d] %s %s",
+                    attempt + 1, total_attempts, script_name, last_error,
+                )
+
+            except Exception:
+                # 非预期异常 → 不重试
+                logger.exception("Unexpected error executing %s", script_name)
+                if langfuse_span:
+                    langfuse_span.update(
+                        level="ERROR",
+                        status_message="非预期异常",
+                    )
+                    langfuse_span.end()
+                return {
+                    "success": False,
+                    "error": f"执行失败: 非预期异常",
+                    "attempts": attempt + 1,
+                }
+
+            # 指数退避等待（最后一次不等待）
+            if attempt < max_retries:
+                wait = min(2 ** attempt, 30)
+                logger.info("等待 %ds 后重试...", wait)
+                time.sleep(wait)
+
+        # 重试耗尽
+        if langfuse_span:
+            langfuse_span.update(
+                level="ERROR",
+                status_message=f"重试 {max_retries} 次后仍失败: {last_error}",
+            )
+            langfuse_span.end()
+
+        return {
+            "success": False,
+            "error": f"重试 {max_retries} 次后仍失败: {last_error}",
+            "attempts": total_attempts,
+        }
 
 
 # 创建 LangChain 工具

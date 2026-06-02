@@ -11,6 +11,12 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse, AgentMiddleware
 from langchain.messages import SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
+try:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    _POSTGRES_SAVER_AVAILABLE = True
+except ImportError:
+    AsyncPostgresSaver = None  # type: ignore[assignment]
+    _POSTGRES_SAVER_AVAILABLE = False
 from langchain_openai import ChatOpenAI
 
 # 支持直接运行和模块导入
@@ -26,6 +32,38 @@ except ImportError:
     from cli_executor import create_cli_executor_tool
     from python_executor import create_python_executor_tool
     from media_resolver import create_media_resolver_tool, MediaResolver
+
+try:
+    from .token_utils import estimate_tokens, calculate_context_budget
+    from .tool_registry import ToolSpec, ToolRegistry
+except ImportError:
+    from token_utils import estimate_tokens, calculate_context_budget
+    from tool_registry import ToolSpec, ToolRegistry
+
+
+# 固定文本模板（工具使用指南 + 工作流程），纳入 token 预算计算
+GUIDE_TEMPLATE = """
+## 工具使用指南
+
+1. **resolve_media**: 根据文件名查找视频/音频/图片的完整路径（用户只需提供文件名，无需完整路径）
+2. **list_media**: 列出所有可用的媒体文件
+3. **load_skill**: 当需要详细了解某个技能时，使用此工具加载完整内容
+4. **execute_cli_script**: 执行 CLI 脚本（如素材搜索、自动导出等）
+5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
+6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
+7. **validate_jyproject_code**: 验证代码语法（不实际执行）
+
+## 工作流程
+
+1. **当用户提到视频/音频/图片文件时，先用 `resolve_media` 解析文件名获取完整路径**
+   - 用户说 "test01.mp4" -> 调用 resolve_media("test01.mp4") -> 得到完整路径
+   - 用户说 "test" -> 调用 resolve_media("test") -> 模糊匹配
+   - 用户给完整路径 -> 调用 resolve_media 验证文件是否存在
+2. 使用 `load_skill("jianying-editor")` 了解整体能力
+3. 根据任务类型选择合适的规则（如 `load_skill("rule_media")`）
+4. 对于简单任务，使用 CLI 脚本（如 `execute_cli_script`）
+5. 对于复杂编排，生成 JyProject 代码并使用 `execute_jyproject_code`
+"""
 
 
 class JianYingSkillMiddleware(AgentMiddleware):
@@ -50,9 +88,68 @@ class JianYingSkillMiddleware(AgentMiddleware):
         
         # 创建工具
         self._create_tools()
-        
-        # 生成技能提示
-        self._generate_skills_prompt()
+
+        # 生成并缓存 L0 路由摘要（技能目录，约 300 tokens，Agent 生命周期不变）
+        self._route_summary_cache = self._build_route_summary()
+
+    def _build_route_summary(self) -> str:
+        """
+        L0 — 始终注入的路由摘要（目标 < 500 tokens）。
+
+        仅包含：技能名称 + 一句话描述 + 类别标记。
+        让 LLM 知道"有哪些技能可用"，但不加载完整内容。
+        """
+        lines = ["## 可用技能目录\n"]
+        categories = {
+            "main": "主技能", "rule": "规则", "script": "脚本", "example": "示例",
+        }
+
+        for cat, label in categories.items():
+            skills = self.parser.get_skills_by_category(cat)
+            if not skills:
+                continue
+            lines.append(f"\n### {label}")
+            max_show = 6  # per-category cap to keep L0 lean
+            for s in skills[:max_show]:
+                desc = s["description"][:50]
+                lines.append(f"- `{s['name']}`: {desc}")
+            if len(skills) > max_show:
+                lines.append(
+                    f"- ... 还有 {len(skills) - max_show} 个（使用 load_skill 查看）"
+                )
+
+        summary = "\n".join(lines)
+        summary += "\n\n> 使用 `load_skill(name)` 获取任何技能的完整内容"
+        return summary
+
+    def _build_category_detail(self, category: str) -> str:
+        """
+        L1 — 按需注入的规则摘要（约 1500 tokens）。
+
+        当 LLM 意图匹配某类别时，注入该类别的完整 rule 内容。
+        对 rule 类注入前 2000 字符，对 script/example 仅注入描述。
+        """
+        skills = self.parser.get_skills_by_category(category)
+        if not skills:
+            return ""
+
+        lines = [f"\n## {category} 类技能详情\n"]
+        for s in skills:
+            if category == "rule":
+                content = s["content"][:2000]  # ~500-800 tokens
+            else:
+                content = s["description"]
+
+            lines.append(f"### {s['name']}")
+            lines.append(content)
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_skills_prompt(self, token_budget: int | None = None) -> str:
+        # Keep for backward compatibility — delegates to L0/L1 system.
+        # New callers should use _build_skills_addendum with category_hint instead.
+        return self._route_summary_cache
     
     def _create_tools(self) -> None:
         """创建所有工具"""
@@ -93,97 +190,202 @@ class JianYingSkillMiddleware(AgentMiddleware):
         self.resolve_media_tool, self.list_media_tool, self.media_resolver = \
             create_media_resolver_tool(extra_paths=self.media_search_paths)
         
-        # 注册所有工具
-        self.tools = [
-            self.load_skill_tool,
-            self.resolve_media_tool,
-            self.list_media_tool,
-            self.execute_cli_tool,
-            self.list_cli_tool,
-            self.execute_python_tool,
-            self.validate_python_tool
+        # 注册所有工具到声明式注册表
+        self.registry = ToolRegistry()
+        self.registry.register_many([
+            ToolSpec(
+                name="load_skill", handler="skill_parser",
+                category="read", func=self.load_skill_tool,
+                exec_mode="sync", concurrency_safe=True, timeout=10,
+                description="加载技能的完整内容到 Agent 上下文中",
+            ),
+            ToolSpec(
+                name="resolve_media", handler="media_resolver",
+                category="read", func=self.resolve_media_tool,
+                exec_mode="sync", concurrency_safe=True, timeout=30,
+                retry_strategy="transient", max_retries=2,
+                description="根据文件名查找视频/音频/图片文件的完整路径",
+            ),
+            ToolSpec(
+                name="list_media", handler="media_resolver",
+                category="read", func=self.list_media_tool,
+                exec_mode="sync", concurrency_safe=True, timeout=30,
+                description="列出所有可用的媒体文件",
+            ),
+            ToolSpec(
+                name="execute_cli_script", handler="cli_executor",
+                category="compute", func=self.execute_cli_tool,
+                exec_mode="async", concurrency_safe=False, timeout=600,
+                retry_strategy="recoverable", max_retries=2,
+                description="执行 CLI 脚本（素材搜索、自动导出、TTS 等）",
+            ),
+            ToolSpec(
+                name="list_cli_scripts", handler="cli_executor",
+                category="read", func=self.list_cli_tool,
+                exec_mode="sync", concurrency_safe=True, timeout=10,
+                description="列出所有可用的 CLI 脚本",
+            ),
+            ToolSpec(
+                name="execute_jyproject_code", handler="python_executor",
+                category="write", func=self.execute_python_tool,
+                exec_mode="sync", concurrency_safe=False, timeout=300,
+                retry_strategy="transient", max_retries=1,
+                description="执行 JyProject 编排代码（用于复杂剪辑流程）",
+            ),
+            ToolSpec(
+                name="validate_jyproject_code", handler="python_executor",
+                category="read", func=self.validate_python_tool,
+                exec_mode="sync", concurrency_safe=True, timeout=10,
+                description="验证 JyProject 代码语法（不实际执行）",
+            ),
+        ])
+        self.tools = self.registry.get_all_tools()
+    
+    def _generate_skills_prompt(self, token_budget: int | None = None) -> str:
+        """
+        生成技能列表提示，支持 token 预算控制。
+
+        优先级：main > rule > script > example
+        每类技能在预算内尽量保留，超出预算时 example 类首先被省略。
+
+        Args:
+            token_budget: 允许使用的最大 token 数，None 表示不限制
+
+        Returns:
+            格式化的技能列表文本
+        """
+        if token_budget is None:
+            token_budget = calculate_context_budget()
+
+        parts: list[str] = []
+        total_used = 0
+
+        category_priority = [
+            ("main", "主技能"),
+            ("rule", "规则指南"),
+            ("script", "CLI 脚本"),
+            ("example", "示例代码"),
         ]
+
+        for category, label in category_priority:
+            cat_skills = self.parser.get_skills_by_category(category)
+            if not cat_skills:
+                continue
+
+            cat_text = f"\n### {label}\n"
+            cat_used = estimate_tokens(cat_text)
+
+            skill_lines: list[str] = []
+            for skill in cat_skills:
+                line = f"- **{skill['name']}**: {skill['description']}\n"
+                line_tokens = estimate_tokens(line)
+                if total_used + cat_used + line_tokens > token_budget:
+                    remaining = len(cat_skills) - len(skill_lines)
+                    if remaining > 0:
+                        skill_lines.append(
+                            f"- ... 还有 {remaining} 个技能"
+                            f"（使用 load_skill 查看）\n"
+                        )
+                    break
+                skill_lines.append(line)
+                cat_used += line_tokens
+
+            if skill_lines:
+                parts.append(cat_text + "".join(skill_lines))
+                total_used += cat_used
+
+        return "\n".join(parts)
     
-    def _generate_skills_prompt(self) -> None:
-        """生成技能列表提示"""
-        skills_list = []
-        
-        # 按分类组织技能
-        categories = {
-            "main": "主技能",
-            "rule": "规则指南",
-            "script": "CLI 脚本",
-            "example": "示例代码"
-        }
-        
-        for category, label in categories.items():
-            category_skills = self.parser.get_skills_by_category(category)
-            if category_skills:
-                skills_list.append(f"\n### {label}")
-                for skill in category_skills:
-                    skills_list.append(f"- **{skill['name']}**: {skill['description']}")
-        
-        self.skills_prompt = "\n".join(skills_list)
-    
+    def _build_media_summary(
+        self, available_files: list[dict], token_budget_remaining: int,
+    ) -> str:
+        """基于剩余 token 预算动态调整媒体文件列表数量"""
+        if not available_files:
+            return ""
+
+        header = "\n### 可用媒体文件\n"
+        used = estimate_tokens(header)
+
+        # 每个文件行约 50 tokens（含文件名、类型、大小）
+        per_file_tokens = 50
+        max_show = min(
+            len(available_files),
+            max(1, (token_budget_remaining - used) // per_file_tokens),
+        )
+
+        media_lines: list[str] = []
+        for f in available_files[:max_show]:
+            line = f"- {f['name']} ({f['type']}, {f['size_mb']}MB)\n"
+            media_lines.append(line)
+
+        if len(available_files) > max_show:
+            media_lines.append(
+                f"- ... 还有 {len(available_files) - max_show} 个文件"
+                f"（使用 list_media 查看）\n"
+            )
+
+        return header + "".join(media_lines)
+
+    def _build_skills_addendum(
+        self,
+        token_budget: int | None = None,
+        category_hint: str | None = None,
+    ) -> str:
+        """
+        构建分级技能附录（供 wrap_model_call / awrap_model_call 共享）。
+
+        - L0（路由摘要）始终注入（~300 tokens）
+        - L1（类别详情）仅在 category_hint 非空且有剩余预算时注入
+        - L2（完整内容）通过 load_skill 工具按需加载
+
+        将 GUIDE_TEMPLATE 等固定文本纳入 token 预算计算，
+        避免实际注入量超出预期。
+        """
+        if token_budget is None:
+            token_budget = calculate_context_budget()
+
+        # L0 路由摘要（从缓存获取）
+        route_summary = self._route_summary_cache
+        guide_tokens = estimate_tokens(GUIDE_TEMPLATE)
+        l0_tokens = estimate_tokens(route_summary)
+        remaining = token_budget - guide_tokens - l0_tokens
+
+        # L1 类别详情（按需，约 1500 tokens）
+        category_detail = ""
+        if category_hint and remaining > 500:
+            detail = self._build_category_detail(category_hint)
+            detail_tokens = estimate_tokens(detail)
+            if detail_tokens <= remaining:
+                category_detail = detail
+                remaining -= detail_tokens
+
+        # 媒体文件列表（每次动态生成，文件可能增删）
+        media_summary = ""
+        try:
+            available_files = self.media_resolver.list_available()
+            if available_files and remaining > 200:
+                media_summary = self._build_media_summary(
+                    available_files, remaining,
+                )
+        except Exception:
+            pass
+
+        return (
+            f"{route_summary}\n\n{category_detail}\n"
+            f"{media_summary}\n{GUIDE_TEMPLATE}"
+        )
+
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """
-        将技能描述注入到系统提示中
-        """
-        # 构建技能附录
-        # 生成可用媒体文件摘要
-        media_summary = ""
-        try:
-            available_files = self.media_resolver.list_available()
-            if available_files:
-                media_lines = ["\n### 可用媒体文件"]
-                for f in available_files[:10]:  # 最多显示 10 个
-                    media_lines.append(f"- {f['name']} ({f['type']}, {f['size_mb']}MB)")
-                if len(available_files) > 10:
-                    media_lines.append(f"- ... 还有 {len(available_files) - 10} 个文件（使用 list_media 查看）")
-                media_summary = "\n".join(media_lines)
-        except Exception:
-            pass
-        
-        skills_addendum = f"""
-## 可用技能
-
-{self.skills_prompt}
-
-{media_summary}
-
-## 工具使用指南
-
-1. **resolve_media**: 根据文件名查找视频/音频/图片的完整路径（用户只需提供文件名，无需完整路径）
-2. **list_media**: 列出所有可用的媒体文件
-3. **load_skill**: 当需要详细了解某个技能时，使用此工具加载完整内容
-4. **execute_cli_script**: 执行 CLI 脚本（如素材搜索、自动导出等）
-5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
-6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
-7. **validate_jyproject_code**: 验证代码语法（不实际执行）
-
-## 工作流程
-
-1. **当用户提到视频/音频/图片文件时，先用 `resolve_media` 解析文件名获取完整路径**
-   - 用户说 "test01.mp4" -> 调用 resolve_media("test01.mp4") -> 得到完整路径
-   - 用户说 "test" -> 调用 resolve_media("test") -> 模糊匹配
-   - 用户给完整路径 -> 调用 resolve_media 验证文件是否存在
-2. 使用 `load_skill("jianying-editor")` 了解整体能力
-3. 根据任务类型选择合适的规则（如 `load_skill("rule_media")`）
-4. 对于简单任务，使用 CLI 脚本（如 `execute_cli_script`）
-5. 对于复杂编排，生成 JyProject 代码并使用 `execute_jyproject_code`
-"""
-        
-        # 追加到系统消息
+        """将技能描述注入到系统提示中"""
+        skills_addendum = self._build_skills_addendum()
         new_content = list(request.system_message.content_blocks) + [
-            {"type": "text", "text": skills_addendum}
+            {"type": "text", "text": skills_addendum},
         ]
         new_system_message = SystemMessage(content=new_content)
-        
-        # 创建修改后的请求
         modified_request = request.override(system_message=new_system_message)
         return handler(modified_request)
 
@@ -192,62 +394,12 @@ class JianYingSkillMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """
-        将技能描述注入到系统提示中（异步版本）
-        
-        逻辑与 wrap_model_call 完全相同，只是 handler 是异步的。
-        """
-        # 构建技能附录
-        # 生成可用媒体文件摘要
-        media_summary = ""
-        try:
-            available_files = self.media_resolver.list_available()
-            if available_files:
-                media_lines = ["\n### 可用媒体文件"]
-                for f in available_files[:10]:  # 最多显示 10 个
-                    media_lines.append(f"- {f['name']} ({f['type']}, {f['size_mb']}MB)")
-                if len(available_files) > 10:
-                    media_lines.append(f"- ... 还有 {len(available_files) - 10} 个文件（使用 list_media 查看）")
-                media_summary = "\n".join(media_lines)
-        except Exception:
-            pass
-
-        skills_addendum = f"""
-## 可用技能
-
-{self.skills_prompt}
-
-{media_summary}
-
-## 工具使用指南
-
-1. **resolve_media**: 根据文件名查找视频/音频/图片的完整路径（用户只需提供文件名，无需完整路径）
-2. **list_media**: 列出所有可用的媒体文件
-3. **load_skill**: 当需要详细了解某个技能时，使用此工具加载完整内容
-4. **execute_cli_script**: 执行 CLI 脚本（如素材搜索、自动导出等）
-5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
-6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
-7. **validate_jyproject_code**: 验证代码语法（不实际执行）
-
-## 工作流程
-
-1. **当用户提到视频/音频/图片文件时，先用 `resolve_media` 解析文件名获取完整路径**
-   - 用户说 "test01.mp4" -> 调用 resolve_media("test01.mp4") -> 得到完整路径
-   - 用户说 "test" -> 调用 resolve_media("test") -> 模糊匹配
-   - 用户给完整路径 -> 调用 resolve_media 验证文件是否存在
-2. 使用 `load_skill("jianying-editor")` 了解整体能力
-3. 根据任务类型选择合适的规则（如 `load_skill("rule_media")`）
-4. 对于简单任务，使用 CLI 脚本（如 `execute_cli_script`）
-5. 对于复杂编排，生成 JyProject 代码并使用 `execute_jyproject_code`
-"""
-
-        # 追加到系统消息
+        """将技能描述注入到系统提示中（异步版本）"""
+        skills_addendum = self._build_skills_addendum()
         new_content = list(request.system_message.content_blocks) + [
-            {"type": "text", "text": skills_addendum}
+            {"type": "text", "text": skills_addendum},
         ]
         new_system_message = SystemMessage(content=new_content)
-
-        # 创建修改后的请求
         modified_request = request.override(system_message=new_system_message)
         return await handler(modified_request)
 
@@ -258,11 +410,12 @@ def create_jianying_agent(
     model_name: str = "qwen3.6-plus",
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_key: str = None,
-    system_prompt: str = None
+    system_prompt: str = None,
+    checkpointer=None,
 ):
     """
     创建 JianYing Editor Agent
-    
+
     Args:
         skill_root: jianying-editor-skill 的根目录路径
         media_search_paths: 媒体文件搜索路径列表（绝对路径），用户只需输入文件名即可
@@ -270,24 +423,26 @@ def create_jianying_agent(
         base_url: API 基础 URL
         api_key: API 密钥（如未提供，从环境变量读取）
         system_prompt: 自定义系统提示
-        
+        checkpointer: LangGraph checkpointer 实例。
+                      默认 InMemorySaver()，生产环境传入 AsyncPostgresSaver(conn)。
+
     Returns:
-        Agent 实例
+        Agent 实例, middleware 实例
     """
     # 获取 API 密钥
     if api_key is None:
         api_key = os.getenv("DASHSCOPE_API_KEY")
-    
+
     # 创建模型
     model = ChatOpenAI(
         model=model_name,
         base_url=base_url,
         api_key=api_key
     )
-    
+
     # 创建中间件
     middleware = JianYingSkillMiddleware(skill_root, media_search_paths=media_search_paths)
-    
+
     # 默认系统提示
     if system_prompt is None:
         system_prompt = """你是一个专业的视频剪辑助手，帮助用户使用剪映（JianYing）进行自动化视频编辑。
@@ -336,14 +491,42 @@ def create_jianying_agent(
    - project.save() 保存（必须调用！）
    - 时间格式："0s", "1s", "3s" 或微秒整数
 
-请根据用户的需求，选择合适的工具完成任务。对于复杂任务，先生成代码并验证，再执行。"""
+请根据用户的需求，选择合适的工具完成任务。对于复杂任务，先生成代码并验证，再执行。
+
+## 分镜方案格式（结构化编辑）
+
+当你需要执行多步骤的复杂剪辑任务（如：导入素材 + 添加文字 + TTS + 导出），
+请输出如下 JSON 格式的分镜方案，系统将自动分步执行：
+
+```json
+{
+    "project_name": "项目名称",
+    "project_config": {"width": 1920, "height": 1080, "fps": 30},
+    "steps": [
+        {"action": "import_media", "file": "文件名", "start_time": "0s", "track": "main"},
+        {"action": "add_text", "text": "标题", "start_time": "0s", "duration": "3s"},
+        {"action": "add_tts", "text": "旁白文本", "speaker": "zh_male_huoli", "start_time": "0s"},
+        {"action": "add_effect", "effect_name": "变清晰2", "start_time": "0s", "duration": "5s"},
+        {"action": "add_transition", "transition_name": "模糊", "duration": "0.5s"},
+        {"action": "export", "draft_name": "项目名", "resolution": "1080p", "fps": 30}
+    ]
+}
+```
+
+可用 action: import_media, add_text, add_tts, add_audio, add_effect, add_transition,
+add_subtitle, smart_rough_cut, export, asset_search, web_record, resolve_media, list_media
+
+每个步骤会独立执行，失败时自动重试，进度实时可见。"""
     
-    # 创建 Agent
+    # 创建 Agent（默认 InMemorySaver，生产环境通过 checkpointer 参数注入持久化）
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
+
     agent = create_agent(
         model,
         system_prompt=system_prompt,
         middleware=[middleware],
-        checkpointer=InMemorySaver()
+        checkpointer=checkpointer,
     )
     
     return agent, middleware
@@ -354,43 +537,55 @@ def run_jianying_agent(
     skill_root: str,
     user_message: str,
     thread_id: str = None,
-    **kwargs
+    enable_observability: bool = False,
+    **kwargs,
 ):
     """
     运行 JianYing Editor Agent 的便捷函数
-    
+
     Args:
         skill_root: jianying-editor-skill 的根目录路径
         user_message: 用户消息
         thread_id: 对话线程 ID（如未提供，自动生成）
+        enable_observability: 是否启用 Langfuse 可观测性埋点
         **kwargs: 其他参数传递给 create_jianying_agent
-        
+
     Returns:
         Agent 响应结果
     """
-    # 创建 Agent
     agent, middleware = create_jianying_agent(skill_root, **kwargs)
-    
-    # 生成线程 ID
+
     if thread_id is None:
         thread_id = str(uuid.uuid4())
-    
-    # 配置
+
     config = {"configurable": {"thread_id": thread_id}}
-    
-    # 调用 Agent
+
+    # Langfuse callback 在 invoke 时通过 config["callbacks"] 传入
+    if enable_observability:
+        try:
+            from .observability import create_langchain_callback
+        except ImportError:
+            from observability import create_langchain_callback
+
+        callback = create_langchain_callback(
+            trace_name="jianying_agent",
+            tags=["easy-scene", "video-editing"],
+        )
+        if callback:
+            config["callbacks"] = [callback]
+
     result = agent.invoke(
         {
             "messages": [
                 {
                     "role": "user",
-                    "content": user_message
+                    "content": user_message,
                 }
             ]
         },
-        config
+        config,
     )
-    
+
     return result
 
 

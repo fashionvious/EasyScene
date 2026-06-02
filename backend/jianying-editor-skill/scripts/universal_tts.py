@@ -6,6 +6,12 @@ import ssl
 from typing import Optional, Tuple
 
 import websockets
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from utils.config import CONFIG
 
 
@@ -64,12 +70,14 @@ def _build_ssl_context() -> ssl.SSLContext:
 
 
 async def _run_sami_tts(text: str, speaker: str, output_file: str, dev_id: str, iid: str):
+    """核心 SAMI TTS 调用——让可重试异常向上传播，由装饰器处理"""
     ws_url = f"wss://sami.bytedance.com/internal/api/v2/ws?device_id={dev_id}&iid={iid}"
     headers = {
         "User-Agent": f"JianyingPro/5.9.0.11632 (Windows 10.0.19045; app_id:3704; device_id:{dev_id})"
     }
     ssl_context = _build_ssl_context()
 
+    # 仅捕获不可重试的异常；ConnectionError/TimeoutError/OSError 向上传播供 tenacity 重试
     try:
         async with websockets.connect(
             ws_url, additional_headers=headers, ssl=ssl_context, open_timeout=20
@@ -114,7 +122,8 @@ async def _run_sami_tts(text: str, speaker: str, output_file: str, dev_id: str, 
                     if event == "TaskFailed":
                         return (
                             False,
-                            f"SAMI Error: {resp.get('status_text')} (Code: {resp.get('status_code')})",
+                            f"SAMI Error: {resp.get('status_text')} "
+                            f"(Code: {resp.get('status_code')})",
                         )
                     if event == "TaskFinished":
                         break
@@ -126,8 +135,19 @@ async def _run_sami_tts(text: str, speaker: str, output_file: str, dev_id: str, 
                     f.write(audio_data)
                 return True, output_file
             return False, "No audio"
-    except Exception as e:
-        return False, str(e)
+    except (json.JSONDecodeError, KeyError) as e:
+        # 协议错误不可重试
+        return False, f"SAMI protocol error: {e}"
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+)
+async def _run_sami_tts_with_retry(text: str, speaker: str, output_file: str, dev_id: str, iid: str):
+    """带指数退避重试的 SAMI TTS 调用"""
+    return await _run_sami_tts(text, speaker, output_file, dev_id, iid)
 
 
 async def _run_edge_tts(text: str, output_file: str, voice: str = "zh-CN-YunxiNeural"):
@@ -158,6 +178,9 @@ async def generate_voice_with_meta(
     backend: None | "sami" | "edge"
     allow_fallback: when True, SAMI failure may fallback to edge.
     returns: (audio_path, backend_used)
+
+    注意：sami_retries 参数已废弃——重试次数现在由 _run_sami_tts_with_retry
+    上的 @retry(stop=stop_after_attempt(3)) 控制，不再使用手动循环。
     """
     dev_id, iid = get_jy_local_config()
     print(f"[*] Intelligent TTS Trace: speaker={speaker}, dev={dev_id}, iid={iid}", flush=True)
@@ -166,16 +189,18 @@ async def generate_voice_with_meta(
     force_edge = backend == "edge"
 
     if not force_edge:
-        for i in range(max(1, int(sami_retries))):
-            ok, res = await _run_sami_tts(text, speaker, output_path, dev_id, iid)
+        try:
+            ok, res = await _run_sami_tts_with_retry(
+                text, speaker, output_path, dev_id, iid,
+            )
             if ok:
                 print(f"[+] SAMI Success: {res}", flush=True)
                 return res, "sami"
+            print(f"[!] SAMI Failed (non-retryable): {res}", flush=True)
+        except (ConnectionError, TimeoutError, OSError) as e:
             print(
-                f"[!] SAMI Failed (attempt {i + 1}/{max(1, int(sami_retries))}): {res}", flush=True
+                f"[!] SAMI Failed after 3 retries: {e}", flush=True,
             )
-            if i + 1 < max(1, int(sami_retries)):
-                await asyncio.sleep(0.35)
 
         if force_sami or not allow_fallback:
             return None, None

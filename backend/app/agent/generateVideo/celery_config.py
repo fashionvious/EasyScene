@@ -15,6 +15,9 @@ celery_app = Celery(
     main="text2video_tasks",
     broker=CeleryConfig.CELERY_BROKER_URL,
     backend=CeleryConfig.CELERY_RESULT_BACKEND,
+    include=[
+        "app.agent.skills_agent.celery_tasks",
+    ],
 )
 
 celery_app.conf.update(

@@ -448,3 +448,149 @@ class ChatMessagePublic(ChatMessageBase):
 class ChatMessagesPublic(SQLModel):
     data: list[ChatMessagePublic]
     count: int
+
+
+# ==================== Edit Task Models ====================
+# Shared properties
+class EditTaskBase(SQLModel):
+    status: str = Field(default="planning", max_length=20)
+    # planning | running | paused | completed | failed
+    current_step: int = Field(default=0)
+    total_steps: int = Field(default=0)
+    project_state_json: str | None = Field(default=None)
+    error_message: str | None = Field(default=None)
+
+
+# Properties to receive on edit task creation
+class EditTaskCreate(EditTaskBase):
+    user_id: uuid.UUID
+    script_id: uuid.UUID
+
+
+# Properties to receive on edit task update
+class EditTaskUpdate(SQLModel):
+    status: str | None = Field(default=None, max_length=20)
+    current_step: int | None = None
+    total_steps: int | None = None
+    project_state_json: str | None = None
+    error_message: str | None = None
+
+
+# Database model for edit_task table
+class EditTask(EditTaskBase, table=True):
+    __tablename__ = "edit_task"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    script_id: uuid.UUID = Field(foreign_key="script.id", nullable=False, ondelete="CASCADE")
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+    update_time: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: int = Field(default=0)
+
+
+# Properties to return via API
+class EditTaskPublic(EditTaskBase):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    script_id: uuid.UUID
+    create_time: datetime
+    update_time: datetime
+
+
+# ==================== Edit Step Models ====================
+# Shared properties
+class EditStepBase(SQLModel):
+    step_index: int
+    tool_name: str = Field(max_length=100)
+    args_json: str | None = Field(default=None)
+    status: str = Field(default="pending", max_length=20)
+    # pending | running | done | failed | skipped
+    result_json: str | None = Field(default=None)
+    error: str | None = Field(default=None)
+    started_at: datetime | None = Field(default=None)
+    finished_at: datetime | None = Field(default=None)
+    retry_count: int = Field(default=0)
+
+
+# Properties to receive on edit step creation
+class EditStepCreate(EditStepBase):
+    task_id: uuid.UUID
+
+
+# Properties to receive on edit step update
+class EditStepUpdate(SQLModel):
+    status: str | None = Field(default=None, max_length=20)
+    result_json: str | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    retry_count: int | None = None
+
+
+# Database model for edit_step table
+class EditStep(EditStepBase, table=True):
+    __tablename__ = "edit_step"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    task_id: uuid.UUID = Field(foreign_key="edit_task.id", nullable=False, ondelete="CASCADE")
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+    update_time: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Properties to return via API
+class EditStepPublic(EditStepBase):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    create_time: datetime
+    update_time: datetime
+
+
+class EditStepsPublic(SQLModel):
+    data: list[EditStepPublic]
+    count: int
+
+
+# ==================== User Preference Models ====================
+# Shared properties
+class UserPreferenceBase(SQLModel):
+    preferred_resolution: str | None = Field(default=None, max_length=20)
+    # "480p" | "720p" | "1080p" | "2K" | "4K"
+    preferred_fps: int | None = Field(default=None)
+    # 24 | 25 | 30 | 50 | 60
+    preferred_speaker: str | None = Field(default=None, max_length=50)
+    # 如 "zh_male_huoli"
+    frequent_media_paths_json: str | None = Field(default=None)
+    # JSON 序列化的常用素材路径列表
+    last_project_name: str | None = Field(default=None, max_length=255)
+
+
+# Properties to receive on user preference creation
+class UserPreferenceCreate(UserPreferenceBase):
+    user_id: uuid.UUID
+
+
+# Properties to receive on user preference update
+class UserPreferenceUpdate(SQLModel):
+    preferred_resolution: str | None = Field(default=None, max_length=20)
+    preferred_fps: int | None = None
+    preferred_speaker: str | None = Field(default=None, max_length=50)
+    frequent_media_paths_json: str | None = None
+    last_project_name: str | None = Field(default=None, max_length=255)
+
+
+# Database model for user_preference table
+class UserPreference(UserPreferenceBase, table=True):
+    __tablename__ = "user_preference"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, unique=True)
+    create_time: datetime = Field(default_factory=datetime.utcnow)
+    update_time: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Properties to return via API
+class UserPreferencePublic(UserPreferenceBase):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    create_time: datetime
+    update_time: datetime

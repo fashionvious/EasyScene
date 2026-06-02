@@ -45,6 +45,7 @@ from pathlib import Path
 # LangGraph相关导入
 from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt, Interrupt
+from langgraph.errors import GraphInterrupt
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 from langchain_core.messages import HumanMessage, AIMessage
@@ -466,8 +467,8 @@ async def run_video_generation_workflow(
         logger.info(f"工作流执行完成，剧本: {script_name}")
         return result
         
-    except Interrupt as e:
-        # 捕获 LangGraph 的 Interrupt 异常（HITL中断）
+    except GraphInterrupt as e:
+        # 捕获 LangGraph 的 GraphInterrupt 异常（HITL中断）
         logger.info(f"工作流遇到HITL中断，等待用户审核，剧本: {script_name}")
         # 返回中断信息，而不是错误
         # 前端应该根据这个信息提示用户进行审核
@@ -582,14 +583,14 @@ async def resume_workflow_and_generate_three_view(
             return False
         
         if has_interrupt(result):
-            logger.info(f"工作流恢复执行遇到HITL中断，等待用户审核，剧本: {script_name}")
+            logger.info(f"工作流恢复执行遇到HITL中断，等待用户审核，script_id: {script_id}")
             return {
                 "interrupted": True,
                 "script_id": script_id,
                 "message": "工作流已暂停，等待用户审核角色信息",
             }
         
-        logger.info(f"工作流恢复执行完成，剧本: {script_name}")
+        logger.info(f"工作流恢复执行完成，script_id: {script_id}")
         
         # 提取四视图图片路径
         character_three_views = result.get("character_three_views", [])
@@ -606,15 +607,15 @@ async def resume_workflow_and_generate_three_view(
             "three_view_image_path": three_view_image_path,
         }
         
-    except Interrupt as e:
-        # 捕获 LangGraph 的 Interrupt 异常（HITL中断）
-        logger.info(f"工作流恢复执行遇到HITL中断，等待用户审核，剧本: {script_name}")
+    except GraphInterrupt as e:
+        # 捕获 LangGraph 的 GraphInterrupt 异常（HITL中断）
+        logger.info(f"工作流恢复执行遇到HITL中断，等待用户审核，script_id: {script_id}")
         return {
             "interrupted": True,
             "script_id": script_id,
             "message": "工作流已暂停，等待用户审核角色信息",
         }
-    
+
     except Exception as e:
         logger.error(f"工作流恢复执行失败: {str(e)}")
         return {

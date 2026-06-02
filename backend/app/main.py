@@ -34,6 +34,10 @@ if settings.all_cors_origins:
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# 注册编辑任务 WebSocket 路由
+from app.api.routes.edit import _ws_router  # noqa: E402
+app.include_router(_ws_router)
+
 # 挂载静态文件目录，用于访问生成的图片
 # 修改：挂载 backend 目录本身，支持动态 script_id 路径
 # 例如：/static/images/{script_id}/generated_images/{filename}

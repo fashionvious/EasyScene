@@ -45,7 +45,8 @@ def analyze_video_content(video_path):
         response = client.chat_completion(
              messages=[{"role": "user", "content": prompt}],
              model=model,
-             file_paths=[video_path]
+             file_paths=[video_path],
+             timeout=180,
         )
         
         if not response or response.status_code != 200:
