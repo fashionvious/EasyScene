@@ -44,6 +44,19 @@ from .tool_registry import (
     ToolRegistry,
 )
 
+# 全局单例引用（由 videoagent.py 设置）
+_middleware_instance = None
+
+
+def set_middleware_instance(mw) -> None:
+    global _middleware_instance
+    _middleware_instance = mw
+
+
+def get_middleware_instance():
+    return _middleware_instance
+
+
 __all__ = [
     # Skill 解析器
     "Skill",
@@ -72,5 +85,9 @@ __all__ = [
     # Agent
     "JianYingSkillMiddleware",
     "create_jianying_agent",
-    "run_jianying_agent"
+    "run_jianying_agent",
+
+    # Singleton
+    "set_middleware_instance",
+    "get_middleware_instance",
 ]

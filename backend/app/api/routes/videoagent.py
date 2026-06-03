@@ -34,6 +34,38 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["videoagent"])
 
+
+def _is_recursion_limit_error(exc: Exception) -> bool:
+    """判断异常是否为 LangGraph 递归限制。"""
+    msg = str(exc)
+    return (
+        "Recursion limit" in msg
+        or "recursion_limit" in msg
+        or "GRAPH_RECURSION_LIMIT" in msg
+    )
+
+
+async def _launch_edit_task_async(
+    storyboard: dict, user_id: str, script_id: str,
+) -> str:
+    """启动编辑任务（异步 wrapper，供 SSE 生成器使用）。"""
+    from app.agent.skills_agent.orchestrator_factory import launch_edit_task
+    return await launch_edit_task(storyboard, user_id, script_id)
+
+
+def _get_recursion_limit(user_message: str) -> int:
+    """
+    根据用户消息决定 recursion_limit。
+
+    - "继续" / "continue" → 扩大为 80（用户确认需要更多步骤）
+    - 默认 → 40
+    """
+    msg_lower = user_message.strip().lower()
+    if msg_lower in ("继续", "continue", "继续执行", "go on", "yes", "是"):
+        logger.info("[VideoAgent] 用户确认继续，recursion_limit 扩大至 80")
+        return 80
+    return 40
+
 # ==================== Agent 单例管理 ====================
 
 _agent_instance = None
@@ -85,6 +117,9 @@ def _get_or_create_agent():
 
     _agent_instance = agent
     _middleware_instance = middleware
+    # 注册全局单例（供 orchestrator_factory 获取 ToolRegistry）
+    from app.agent.skills_agent import set_middleware_instance
+    set_middleware_instance(middleware)
     return agent, middleware
 
 
@@ -134,6 +169,46 @@ def _extract_text_content(content) -> str:
     return str(content) if content else ""
 
 
+def _try_extract_storyboard(text: str) -> dict | None:
+    """从 AI 回复中尝试提取分镜 JSON 方案。
+    返回 dict 如果找到，否则 None。
+    """
+    import re
+    # 匹配 ```json ... ``` 代码块中的 JSON
+    m = re.search(r'```(?:json)?\s*(\{[\s\S]*?"steps"[\s\S]*?\})\s*```', text)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict) and "steps" in data:
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+    # 匹配裸 JSON（无条件代码块的）
+    try:
+        # 找第一个 { 开始、最后 } 结束的大 JSON
+        start = text.find('{"project_name"')
+        if start == -1:
+            start = text.find('{"steps"')
+        if start >= 0:
+            depth = 0
+            end = -1
+            for i in range(start, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end > start:
+                data = json.loads(text[start:end])
+                if isinstance(data, dict) and "steps" in data:
+                    return data
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return None
+
+
 # ==================== 会话管理辅助函数 ====================
 
 
@@ -159,6 +234,7 @@ def _save_message(
     conversation_id: str,
     role: str,
     content: str,
+    tool_steps_json: str | None = None,
 ) -> None:
     """保存一条聊天消息到数据库"""
     with Session(engine) as session:
@@ -167,7 +243,7 @@ def _save_message(
             role=role,
             content=content,
         )
-        crud.create_chat_message(session=session, msg_in=msg_in)
+        crud.create_chat_message(session=session, msg_in=msg_in, tool_steps_json=tool_steps_json)
 
 
 def _update_conversation_title(
@@ -266,7 +342,8 @@ async def api_chat(
         raise HTTPException(status_code=500, detail=f"AI 服务初始化失败: {str(e)}")
 
     conversation_id = request.conversation_id or str(uuid.uuid4())
-    config = {"configurable": {"thread_id": conversation_id}}
+    recursion_limit = _get_recursion_limit(request.message)
+    config = {"configurable": {"thread_id": conversation_id}, "recursion_limit": recursion_limit}
 
     # 确保会话存在于数据库
     _ensure_conversation(conversation_id, current_user.id, request.script_id)
@@ -304,6 +381,14 @@ async def api_chat(
 
     except Exception as e:
         logger.error(f"[VideoAgent] Agent 调用失败: {e}")
+        if _is_recursion_limit_error(e):
+            return ChatResponse(
+                conversation_id=conversation_id,
+                message=(
+                    "任务步骤较多，当前执行已达到单轮上限。已完成部分内容，"
+                    "请回复'继续'以自动扩大上限并恢复执行。"
+                ),
+            )
         raise HTTPException(status_code=500, detail=f"AI 处理失败: {str(e)}")
 
 
@@ -329,7 +414,8 @@ async def api_chat_stream(
         raise HTTPException(status_code=500, detail=f"AI 服务初始化失败: {str(e)}")
 
     conversation_id = request.conversation_id or str(uuid.uuid4())
-    config = {"configurable": {"thread_id": conversation_id}}
+    recursion_limit = _get_recursion_limit(request.message)
+    config = {"configurable": {"thread_id": conversation_id}, "recursion_limit": recursion_limit}
 
     # 确保会话存在于数据库
     _ensure_conversation(conversation_id, current_user.id, request.script_id)
@@ -345,6 +431,8 @@ async def api_chat_stream(
         """SSE 事件生成器 - 使用 astream_events 推送结构化事件"""
         # 累积 AI 回复内容，用于最终保存到数据库
         assistant_content = ""
+        # 收集工具调用事件（按时间线顺序），用于持久化
+        tool_events: list[dict] = []
 
         try:
             # 使用 astream_events 获取细粒度事件流
@@ -391,6 +479,12 @@ async def api_chat_stream(
                         args_str = json.dumps(tool_input, ensure_ascii=False)
                         if len(args_str) > 500:
                             args_str = args_str[:500] + "..."
+                        tool_events.append({
+                            "type": "tool",
+                            "tool_name": tool_name,
+                            "tool_args": args_str,
+                            "status": "running",
+                        })
                         yield _make_sse("tool_call", {
                             "tool_name": tool_name,
                             "tool_args": args_str,
@@ -403,19 +497,84 @@ async def api_chat_stream(
                         output_str = str(output)
                         if len(output_str) > 1000:
                             output_str = output_str[:1000] + "..."
+                        # 合并到最后一个匹配的 running 条目，而非新建
+                        merged = False
+                        for entry in reversed(tool_events):
+                            if entry.get("type") == "tool" and entry.get("tool_name") == tool_name and entry.get("status") == "running":
+                                entry["result"] = output_str
+                                entry["status"] = "completed"
+                                merged = True
+                                break
+                        if not merged:
+                            tool_events.append({
+                                "type": "tool",
+                                "tool_name": tool_name,
+                                "result": output_str,
+                                "status": "completed",
+                            })
                         yield _make_sse("tool_result", {
                             "tool_name": tool_name,
                             "result": output_str,
                         })
 
+                        # Path B: submit_storyboard 工具调用 → 启动编辑任务
+                        if tool_name == "submit_storyboard" and '"status": "valid"' in output_str:
+                            try:
+                                # 从多个可能位置提取 storyboard JSON
+                                tool_input = data.get("input", {})
+                                json_str = (
+                                    tool_input.get("storyboard_json", "")
+                                    or str(tool_input)  # fallback: 整个 input 可能就是 JSON
+                                )
+                                # 如果工具输出的 output 本身就包含 storyboard
+                                if not json_str or "steps" not in json_str:
+                                    parsed_output = json.loads(output_str) if isinstance(output_str, str) else output_str
+                                    json_str = json_str or str(tool_input)
+
+                                storyboard = json.loads(json_str) if isinstance(json_str, str) else json_str
+                                if isinstance(storyboard, dict) and "steps" in storyboard:
+                                    task_id = await _launch_edit_task_async(
+                                        storyboard, str(current_user.id), request.script_id,
+                                    )
+                                    yield _make_sse("task_created", {
+                                        "task_id": task_id,
+                                        "conversation_id": conversation_id,
+                                        "total_steps": len(storyboard.get("steps", [])),
+                                    })
+                                    logger.info("[VideoAgent] submit_storyboard 触发, task_id=%s", task_id)
+                                else:
+                                    logger.warning("[VideoAgent] submit_storyboard JSON 无 steps: %s", json_str[:200])
+                            except Exception as e:
+                                logger.exception("[VideoAgent] submit_storyboard 启动失败")
+
                     # --- Agent 步骤结束（可用于追踪多轮工具调用） ---
                     elif kind == "on_chain_end" and name == "AgentExecutor":
                         pass  # 不需要单独发事件
 
-                # 保存 AI 回复到数据库
-                if assistant_content:
-                    _save_message(conversation_id, "assistant", assistant_content)
+                # 保存 AI 回复到数据库（含工具调用步骤）
+                tool_steps_json = json.dumps(tool_events, ensure_ascii=False) if tool_events else None
+                if assistant_content or tool_steps_json:
+                    _save_message(conversation_id, "assistant", assistant_content, tool_steps_json)
                 _update_conversation_timestamp(conversation_id)
+
+                # Path B 集成：检测分镜 JSON 并启动编辑任务
+                storyboard = _try_extract_storyboard(assistant_content)
+                if storyboard:
+                    try:
+                        task_id = await _launch_edit_task_async(
+                            storyboard, str(current_user.id), request.script_id,
+                        )
+                        yield _make_sse("task_created", {
+                            "task_id": task_id,
+                            "conversation_id": conversation_id,
+                            "total_steps": len(storyboard.get("steps", [])),
+                        })
+                        logger.info("[VideoAgent] 分镜方案检测成功, task_id=%s", task_id)
+                    except Exception as e:
+                        logger.exception("[VideoAgent] 分镜方案启动失败")
+                        yield _make_sse("error", {
+                            "content": f"编辑任务启动失败: {e}",
+                        })
 
                 # 发送完成事件
                 yield _make_sse("done", {"conversation_id": conversation_id})
@@ -451,6 +610,21 @@ async def api_chat_stream(
                         _save_message(conversation_id, "assistant", assistant_content)
                     _update_conversation_timestamp(conversation_id)
 
+                    # Path B: 检测分镜 JSON
+                    storyboard = _try_extract_storyboard(assistant_content)
+                    if storyboard:
+                        try:
+                            task_id = await _launch_edit_task_async(
+                                storyboard, str(current_user.id), request.script_id,
+                            )
+                            yield _make_sse("task_created", {
+                                "task_id": task_id,
+                                "conversation_id": conversation_id,
+                                "total_steps": len(storyboard.get("steps", [])),
+                            })
+                        except Exception as e:
+                            logger.exception("[VideoAgent] 分镜方案启动失败(stream)")
+
                     yield _make_sse("done", {"conversation_id": conversation_id})
 
                 else:
@@ -472,12 +646,42 @@ async def api_chat_stream(
                     _save_message(conversation_id, "assistant", ai_message)
                     _update_conversation_timestamp(conversation_id)
 
+                    # Path B: 检测分镜 JSON
+                    storyboard = _try_extract_storyboard(ai_message)
+                    if storyboard:
+                        try:
+                            task_id = await _launch_edit_task_async(
+                                storyboard, str(current_user.id), request.script_id,
+                            )
+                            yield _make_sse("task_created", {
+                                "task_id": task_id,
+                                "conversation_id": conversation_id,
+                                "total_steps": len(storyboard.get("steps", [])),
+                            })
+                        except Exception as e:
+                            logger.exception("[VideoAgent] 分镜方案启动失败(invoke)")
+
                     yield _make_sse("text", {"content": ai_message})
                     yield _make_sse("done", {"conversation_id": conversation_id})
 
         except Exception as e:
             logger.error(f"[VideoAgent] 流式生成失败: {e}", exc_info=True)
-            # 即使出错，也尝试保存已累积的内容
+
+            # 递归限制 → HITL：告知用户任务未完成，询问是否继续
+            if _is_recursion_limit_error(e):
+                if assistant_content:
+                    _save_message(conversation_id, "assistant", assistant_content)
+                yield _make_sse("hitl_continue", {
+                    "message": (
+                        "任务步骤较多，当前执行已达到单轮上限。"
+                        "已完成部分内容，请回复'继续'以自动扩大上限并恢复执行。"
+                    ),
+                    "conversation_id": conversation_id,
+                    "suggestion": "回复'继续'以继续，或回复'取消'以中止",
+                })
+                yield _make_sse("done", {"conversation_id": conversation_id})
+                return
+
             if assistant_content:
                 _save_message(conversation_id, "assistant", assistant_content)
             yield _make_sse("error", {"content": f"AI 处理失败: {str(e)}"})

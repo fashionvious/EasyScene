@@ -280,7 +280,7 @@ class StepOrchestrator:
     # ---- internal ----
 
     async def _execute_single_step(self, plan: EditPlan, step: StepSpec) -> Any:
-        """执行单个步骤。NOTIFY_USER 类错误写入 pending 队列并暂停。"""
+        """执行单个步骤。storyboard action → JyProject code → 执行。"""
         step.status = StepStatus.RUNNING
         step.started_at = time.time()
         await self._save_step_checkpoint(plan.task_id, step)
@@ -290,10 +290,16 @@ class StepOrchestrator:
             spec = self.registry.get_spec(step.tool)
 
         try:
+            # storyboard action → 生成 JyProject 代码
+            actual_args = dict(step.args)
+            if step.tool == "execute_jyproject_code" and "action" in actual_args:
+                code = _build_jyproject_code(step.args)
+                actual_args = {"code": code}
+
             if spec is not None and spec.exec_mode == "async":
-                result = await self._dispatch_celery(step, spec)
+                result = await self._dispatch_celery(step, spec, actual_args)
             elif spec is not None:
-                result = await asyncio.to_thread(spec.func, **step.args)
+                result = await asyncio.to_thread(spec.func, **actual_args)
             else:
                 raise ValueError(f"未知工具 '{step.tool}' 且 ToolRegistry 不可用")
 
@@ -339,13 +345,14 @@ class StepOrchestrator:
         return action.value
 
 
-    async def _dispatch_celery(self, step: StepSpec, spec: Any) -> Any:
+    async def _dispatch_celery(self, step: StepSpec, spec: Any, actual_args: dict | None = None) -> Any:
         """将重量步骤提交为 Celery Task，异步轮询等待完成。"""
         try:
             from .celery_tasks import ASYNC_TOOL_TASK_MAP
         except ImportError:
             from celery_tasks import ASYNC_TOOL_TASK_MAP
 
+        args = actual_args or step.args
         action = step.args.get("action", "unknown")
         tool_map = ASYNC_TOOL_TASK_MAP.get(step.tool, {})
         celery_task = tool_map.get(action)
@@ -354,11 +361,11 @@ class StepOrchestrator:
             logger.warning(
                 "无 Celery Task 匹配 %s:%s，回退同步执行", step.tool, action,
             )
-            return await asyncio.to_thread(spec.func, **step.args)
+            return await asyncio.to_thread(spec.func, **args)
 
         # 提取 Celery task 所需的参数（过滤元数据字段）
         task_kwargs = {
-            k: v for k, v in step.args.items()
+            k: v for k, v in args.items()
             if k not in ("action", "step_index", "project_name", "project_config")
         }
         result = celery_task.delay(**task_kwargs)
@@ -493,6 +500,108 @@ class StepOrchestrator:
 class StepPausedError(Exception):
     """步骤暂停异常：由 NOTIFY_USER 错误触发，需用户决策后恢复。"""
     pass
+
+
+# ============================================================================
+# Storyboard → JyProject code 转换
+# ============================================================================
+
+def _build_jyproject_code(args: dict) -> str:
+    """从单个 storyboard action 生成 JyProject Python 代码。
+
+    每个 action 生成独立的 project → add → save 脚本。
+    所有 import 由 bootstrap 自动注入。
+    """
+    action = args.get("action", "")
+    project_name = args.get("project_name", "未命名项目")
+    step_index = args.get("step_index", 0)
+
+    # 每个步骤创建独立 project（后续步骤通过 draft_name 复用草稿）
+    project_var = f"project_{step_index}"
+    lines = [
+        f'{project_var} = JyProject("{project_name}")',
+    ]
+
+    if action == "import_media":
+        file_path = args.get("file", "")
+        start = args.get("start_time", "0s")
+        track = args.get("track", "main")
+        lines.append(
+            f'{project_var}.add_media_safe(r"{file_path}", "{start}", track_name="{track}")'
+        )
+
+    elif action == "add_text":
+        text = args.get("text", "")
+        start = args.get("start_time", "0s")
+        duration = args.get("duration", "3s")
+        lines.append(
+            f'{project_var}.add_text_simple("{text}", start_time="{start}", duration="{duration}")'
+        )
+
+    elif action == "add_tts":
+        text = args.get("text", "")
+        speaker = args.get("speaker", "zh_male_huoli")
+        start = args.get("start_time", "0s")
+        lines.append(
+            f'{project_var}.add_tts_intelligent("{text}", speaker="{speaker}", start_time="{start}")'
+        )
+
+    elif action == "add_audio":
+        file_path = args.get("file", args.get("audio_path", ""))
+        start = args.get("start_time", "0s")
+        track = args.get("track", "audio")
+        lines.append(
+            f'{project_var}.add_audio_safe(r"{file_path}", "{start}", track_name="{track}")'
+        )
+
+    elif action == "add_effect":
+        effect_name = args.get("effect_name", "")
+        start = args.get("start_time", "0s")
+        duration = args.get("duration", "3s")
+        lines.append(
+            f'{project_var}.add_effect_simple("{effect_name}", start_time="{start}", duration="{duration}")'
+        )
+
+    elif action == "add_transition":
+        trans_name = args.get("transition_name", "模糊")
+        duration = args.get("duration", "0.5s")
+        lines.append(
+            f'{project_var}.add_transition_simple("{trans_name}", duration="{duration}")'
+        )
+
+    elif action == "add_subtitle":
+        text = args.get("text", "")
+        speaker = args.get("speaker", "zh_male_huoli")
+        start = args.get("start_time", "0s")
+        lines.append(
+            f'{project_var}.add_narrated_subtitles("{text}", speaker="{speaker}", start_time="{start}")'
+        )
+
+    elif action == "export":
+        draft_name = args.get("draft_name", project_name)
+        resolution = args.get("resolution", "1080p")
+        output = args.get("output_path", f"{draft_name}.mp4")
+        lines = [
+            f'# Export: {draft_name}',
+            f'import subprocess, sys',
+            f'cmd = [sys.executable, "scripts/auto_exporter.py", "{draft_name}", "{output}", "--res", "{resolution}"]',
+            f'result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=900)',
+            f'print("Export:", "OK" if result.returncode == 0 else result.stderr)',
+        ]
+
+    else:
+        # 未知 action → 作为通用代码执行
+        lines.append(f'# Unknown action: {action}')
+        for k, v in args.items():
+            if k not in ("action", "step_index", "project_name", "project_config"):
+                lines.append(f'# {k} = {v!r}')
+
+    # 公共尾部
+    lines.append(f'_trim_project_duration({project_var})')
+    lines.append(f'{project_var}.save()')
+    lines.append(f'print("Step {step_index} ({action}) done")')
+
+    return "\n".join(lines)
 
 
 # ============================================================================

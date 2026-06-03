@@ -52,6 +52,7 @@ GUIDE_TEMPLATE = """
 5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
 6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
 7. **validate_jyproject_code**: 验证代码语法（不实际执行）
+8. **submit_storyboard**: 提交分镜方案 JSON，系统自动分步执行
 
 ## 工作流程
 
@@ -189,7 +190,37 @@ class JianYingSkillMiddleware(AgentMiddleware):
         # 4. 媒体素材解析工具
         self.resolve_media_tool, self.list_media_tool, self.media_resolver = \
             create_media_resolver_tool(extra_paths=self.media_search_paths)
-        
+
+        # 5. 分镜方案提交通具（Path B 入口）
+        @tool
+        def submit_storyboard(storyboard_json: str) -> str:
+            """
+            提交分镜方案 JSON，系统自动分步执行并实时显示进度。
+
+            当你完成素材解析后，**必须调用此工具**提交最终方案。
+            json 参数为完整的方案 JSON 字符串。
+
+            格式：{"project_name":"...","project_config":{"width":1920,"height":1080},
+                   "steps":[{"action":"import_media","file":"完整路径","start_time":"0s"},...]}
+
+            示例调用：submit_storyboard('{"project_name":"test","steps":[{"action":"list_media"}]}')
+            """
+            import json as _json
+            try:
+                data = _json.loads(storyboard_json) if isinstance(storyboard_json, str) else storyboard_json
+            except _json.JSONDecodeError as e:
+                return f"JSON 解析失败: {e}"
+            if not isinstance(data, dict) or "steps" not in data:
+                return "错误: 方案必须包含 project_name 和 steps 字段"
+            # Validation pass — task_id will be returned by the backend hook
+            return _json.dumps({
+                "status": "valid",
+                "total_steps": len(data["steps"]),
+                "message": "分镜方案校验通过，正在启动执行...",
+            }, ensure_ascii=False)
+
+        self.submit_storyboard_tool = submit_storyboard
+
         # 注册所有工具到声明式注册表
         self.registry = ToolRegistry()
         self.registry.register_many([
@@ -237,6 +268,12 @@ class JianYingSkillMiddleware(AgentMiddleware):
                 category="read", func=self.validate_python_tool,
                 exec_mode="sync", concurrency_safe=True, timeout=10,
                 description="验证 JyProject 代码语法（不实际执行）",
+            ),
+            ToolSpec(
+                name="submit_storyboard", handler="storyboard_parser",
+                category="write", func=self.submit_storyboard_tool,
+                exec_mode="sync", concurrency_safe=False, timeout=10,
+                description="提交分镜方案 JSON，系统自动分步执行并显示实时进度。编辑任务必须调用此工具完成。",
             ),
         ])
         self.tools = self.registry.get_all_tools()
@@ -330,6 +367,7 @@ class JianYingSkillMiddleware(AgentMiddleware):
         self,
         token_budget: int | None = None,
         category_hint: str | None = None,
+        user_id: str | None = None,
     ) -> str:
         """
         构建分级技能附录（供 wrap_model_call / awrap_model_call 共享）。
@@ -370,9 +408,19 @@ class JianYingSkillMiddleware(AgentMiddleware):
         except Exception:
             pass
 
+        # 用户偏好注入（有 session 时从 PG 加载）
+        preference_prompt = ""
+        if user_id:
+            try:
+                from .session_memory import SessionMemory
+            except ImportError:
+                from session_memory import SessionMemory
+            memory = SessionMemory(user_id)
+            preference_prompt = memory.build_preference_prompt()  # session=None → returns ""
+
         return (
             f"{route_summary}\n\n{category_detail}\n"
-            f"{media_summary}\n{GUIDE_TEMPLATE}"
+            f"{media_summary}\n{GUIDE_TEMPLATE}\n{preference_prompt}"
         )
 
     def wrap_model_call(
@@ -380,7 +428,20 @@ class JianYingSkillMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """将技能描述注入到系统提示中"""
+        """将技能描述注入到系统提示中，必要时压缩上下文。"""
+
+        # autoCompact: 检查是否需要压缩消息历史
+        if hasattr(request, "messages"):
+            try:
+                from .context_compactor import should_compact, compact_messages
+            except ImportError:
+                from context_compactor import should_compact, compact_messages
+
+            if should_compact(request.messages):
+                result = compact_messages(request.messages)
+                if result.rounds_compacted > 0:
+                    request = request.override(messages=result.compacted_content)
+
         skills_addendum = self._build_skills_addendum()
         new_content = list(request.system_message.content_blocks) + [
             {"type": "text", "text": skills_addendum},
@@ -394,7 +455,19 @@ class JianYingSkillMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """将技能描述注入到系统提示中（异步版本）"""
+        """将技能描述注入到系统提示中（异步版本），必要时压缩上下文。"""
+
+        if hasattr(request, "messages"):
+            try:
+                from .context_compactor import should_compact, compact_messages
+            except ImportError:
+                from context_compactor import should_compact, compact_messages
+
+            if should_compact(request.messages):
+                result = compact_messages(request.messages)
+                if result.rounds_compacted > 0:
+                    request = request.override(messages=result.compacted_content)
+
         skills_addendum = self._build_skills_addendum()
         new_content = list(request.system_message.content_blocks) + [
             {"type": "text", "text": skills_addendum},
@@ -407,7 +480,7 @@ class JianYingSkillMiddleware(AgentMiddleware):
 def create_jianying_agent(
     skill_root: str,
     media_search_paths: list[str] = None,
-    model_name: str = "qwen3.6-plus",
+    model_name: str = "glm-5.1",
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_key: str = None,
     system_prompt: str = None,
@@ -479,7 +552,7 @@ def create_jianying_agent(
 3. **防黑屏规则**：在 project.save() 前必须调用 _trim_project_duration(project)！它会自动将项目总时长裁剪为所有片段的最大结束时间，避免视频播完后黑屏继续播放。
 
 4. **JyProject API 速查**：
-   - JyProject(name, width=1920, height=1080, fps=30) 创建项目
+   - JyProject(name, width=1920, height=1080) 创建项目
    - project.add_media_safe(path, start_time, duration, track_name) 添加媒体
    - project.add_text_simple(text, start_time, duration) 添加文本
    - project.add_audio_safe(path, start_time, track_name) 添加音频
@@ -493,30 +566,35 @@ def create_jianying_agent(
 
 请根据用户的需求，选择合适的工具完成任务。对于复杂任务，先生成代码并验证，再执行。
 
-## 分镜方案格式（结构化编辑）
+## 分镜方案提交（必须用工具）
 
-当你需要执行多步骤的复杂剪辑任务（如：导入素材 + 添加文字 + TTS + 导出），
-请输出如下 JSON 格式的分镜方案，系统将自动分步执行：
-
-```json
-{
-    "project_name": "项目名称",
-    "project_config": {"width": 1920, "height": 1080, "fps": 30},
-    "steps": [
-        {"action": "import_media", "file": "文件名", "start_time": "0s", "track": "main"},
-        {"action": "add_text", "text": "标题", "start_time": "0s", "duration": "3s"},
-        {"action": "add_tts", "text": "旁白文本", "speaker": "zh_male_huoli", "start_time": "0s"},
-        {"action": "add_effect", "effect_name": "变清晰2", "start_time": "0s", "duration": "5s"},
-        {"action": "add_transition", "transition_name": "模糊", "duration": "0.5s"},
-        {"action": "export", "draft_name": "项目名", "resolution": "1080p", "fps": 30}
-    ]
-}
+任何文件操作任务，在解析完文件路径后，**必须调用 submit_storyboard 工具**提交方案：
 ```
-
+submit_storyboard(storyboard_json='{"project_name":"我的视频","project_config":{"width":1920,"height":1080},"steps":[{"action":"import_media","file":"完整路径","start_time":"0s"},{"action":"export","draft_name":"项目名","resolution":"1080p"}]}')
+```
 可用 action: import_media, add_text, add_tts, add_audio, add_effect, add_transition,
-add_subtitle, smart_rough_cut, export, asset_search, web_record, resolve_media, list_media
+add_subtitle, smart_rough_cut, export, asset_search, resolve_media, list_media
 
-每个步骤会独立执行，失败时自动重试，进度实时可见。"""
+⚠️ **编辑任务必须用 submit_storyboard 提交！** 文件路径解析完成后，调用 submit_storyboard 工具提交 JSON 方案。
+系统自动分步执行并显示实时进度。不要直接在文本中输出 JSON！
+
+## 执行铁律（避免无效重试）
+
+1. **代码错误不重试**：如果 execute_jyproject_code 报 AttributeError / TypeError / SyntaxError，
+   说明代码本身有 bug，直接修正代码后重新执行。不要对同一段错误代码重复调用。
+
+2. **CLI 异常不重试**：如果 execute_cli_script 返回"非预期异常"，说明脚本环境有问题，
+   换一种方式实现（例如改用 execute_jyproject_code 内联调用 subprocess）。
+
+3. **转场/特效查找**：使用 execute_cli_script("asset_search", query="模糊", category="transitions")
+   来搜索 ID，不要直接调用 add_transition_simple 传中文名。
+   JyProject 的 add_transition_simple 接受 transition_name 参数。
+   如果报错 AttributeError: 'Transition'，说明库版本不支持该 API，
+   改为不加转场，完成任务的其他部分。
+
+4. **最多重试 2 次**：同一工具的同一参数失败 2 次后，改为替代方案，不要死循环。
+
+5. **skill 名称中有反引号**：如 effects`（注意结尾的反引号），请直接复制使用。"""
     
     # 创建 Agent（默认 InMemorySaver，生产环境通过 checkpointer 参数注入持久化）
     if checkpointer is None:
@@ -558,7 +636,7 @@ def run_jianying_agent(
     if thread_id is None:
         thread_id = str(uuid.uuid4())
 
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 5}
 
     # Langfuse callback 在 invoke 时通过 config["callbacks"] 传入
     if enable_observability:
@@ -627,7 +705,7 @@ if __name__ == "__main__":
     
     # 对话线程
     thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 5}
     
     # 测试请求（现在只需文件名，无需完整路径）
     result = agent.invoke(

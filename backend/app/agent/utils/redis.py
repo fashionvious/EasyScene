@@ -974,6 +974,28 @@ class EditTaskRedisManager:
             logger.warning("[EditTaskRedis] get_user_pending 失败: %s", e)
             return []
 
+    async def publish_progress(
+        self, task_id: str, event_type: str, data: dict,
+    ) -> None:
+        """通过 Redis PubSub 推送进度事件。"""
+        try:
+            channel = f"edit_progress:{task_id}"
+            message = json.dumps({
+                "type": event_type, "task_id": task_id, **data,
+            })
+            await self.redis.publish(channel, message)
+        except Exception as e:
+            logger.warning("[EditTaskRedis] publish_progress 失败: %s", e)
+
+    async def notify_preview_ready(
+        self, task_id: str, preview_path: str,
+    ) -> None:
+        """推送视频预览就绪事件。"""
+        await self.publish_progress(task_id, "preview_ready", {
+            "preview_path": preview_path,
+            "message": "视频预览已就绪",
+        })
+
     async def get_pending_count(self, user_id: str) -> int:
         """获取待决策任务数量（供前端 badge 显示）"""
         try:

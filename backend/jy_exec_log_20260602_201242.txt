@@ -1,0 +1,21 @@
+=== STDOUT ===
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpxasdnpos.py", line 38, in <module>
+    from jy_wrapper import JyProject
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\jy_wrapper.py", line 8, in <module>
+    import uuid
+  File "C:\Users\ali\miniconda3\Lib\uuid.py", line 50, in <module>
+    from enum import Enum, _simple_enum
+  File "C:\Users\ali\miniconda3\Lib\enum.py", line 4, in <module>
+    from operator import or_ as _or_
+  File "C:\Users\ali\miniconda3\Lib\operator.py", line 414, in <module>
+    from _operator import *
+  File "<frozen importlib._bootstrap>", line 1357, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 417, in __enter__
+  File "<frozen importlib._bootstrap>", line 443, in _get_module_lock
+  File "<frozen importlib._bootstrap>", line 253, in __init__
+KeyboardInterrupt
+

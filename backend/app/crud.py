@@ -104,8 +104,8 @@ def update_conversation(
 # ==================== ChatMessage CRUD ====================
 
 
-def create_chat_message(*, session: Session, msg_in: ChatMessageCreate) -> ChatMessage:
-    db_obj = ChatMessage.model_validate(msg_in)
+def create_chat_message(*, session: Session, msg_in: ChatMessageCreate, tool_steps_json: str | None = None) -> ChatMessage:
+    db_obj = ChatMessage.model_validate(msg_in, update={"tool_steps_json": tool_steps_json})
     session.add(db_obj)
     session.commit()
     session.refresh(db_obj)

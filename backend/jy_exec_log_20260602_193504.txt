@@ -1,0 +1,12 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Creating new project: 缉凶者_场景1
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpwhptx1r6.py", line 59, in <module>
+    draft_path = project.draft_path
+                 ^^^^^^^^^^^^^^^^^^
+AttributeError: 'JyProject' object has no attribute 'draft_path'
+

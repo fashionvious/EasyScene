@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
+  AlertTriangle,
   ArrowLeft,
   Brain,
   ChevronRight,
@@ -18,6 +19,8 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { ControlBar } from "@/components/Edit/ControlBar"
+import { ErrorCard } from "@/components/Edit/ErrorCard"
 import {
   Dialog,
   DialogClose,
@@ -80,11 +83,22 @@ interface ToolStep {
   status: "running" | "completed"
 }
 
+/** 消息时间线段 - 按时间线记录工具调用和文本 */
+interface MessageSegment {
+  type: "text" | "tool"
+  content?: string
+  tool_name?: string
+  tool_args?: string
+  result?: string
+  status?: "running" | "completed"
+}
+
 /** 聊天消息 - 支持结构化内容 */
 interface ChatMessage {
   role: "user" | "assistant"
   content: string
-  toolSteps?: ToolStep[]
+  toolSteps?: ToolStep[]  // 向后兼容旧格式
+  segments?: MessageSegment[]  // 新格式：按时间线排列的混合内容段
   streaming?: boolean
 }
 
@@ -229,11 +243,31 @@ async function fetchConversationMessages(
     role: string
     content: string
     create_time: string
+    tool_steps_json?: string | null
   }[] = await response.json()
-  return data.map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.content,
-  }))
+  return data.map((m) => {
+    // Bug2: 从后端恢复工具调用 segments
+    let segments: MessageSegment[] | undefined
+    if (m.tool_steps_json) {
+      try {
+        segments = JSON.parse(m.tool_steps_json) as MessageSegment[]
+      } catch { /* JSON 解析失败则忽略 */ }
+    }
+    // Bug2: 如果后端没有 segments，尝试从 localStorage 恢复
+    if (!segments || segments.length === 0) {
+      try {
+        const cached = localStorage.getItem(`chat_segments_${conversationId}`)
+        if (cached) {
+          segments = JSON.parse(cached) as MessageSegment[]
+        }
+      } catch { /* localStorage 读取失败则忽略 */ }
+    }
+    return {
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      segments,
+    }
+  })
 }
 
 // ==================== 路由 ====================
@@ -309,45 +343,98 @@ function HistoryDialog({
   )
 }
 
-// ==================== 工具步骤渲染 ====================
+// ==================== 消息段渲染（Bug3: 按时间线排列） ====================
 
-function ToolStepsView({ steps }: { steps: ToolStep[] }) {
-  if (steps.length === 0) return null
+/** 单个工具步骤卡片 — 直接展示全部信息 */
+function ToolSegmentView({ segment }: { segment: MessageSegment }) {
+  const isRunning = segment.status === "running"
+  const isCompleted = segment.status === "completed"
 
   return (
-    <div className="flex flex-col gap-1.5 mb-2">
-      {steps.map((step, idx) => (
+    <div className="flex items-start gap-2 text-xs my-1">
+      {/* 状态指示点 */}
+      <div className="shrink-0 pt-1">
         <div
-          key={idx}
-          className="flex items-start gap-2 text-xs rounded-md px-2.5 py-1.5
-            bg-blue-500/8 dark:bg-blue-400/10 border border-blue-500/15 dark:border-blue-400/20"
+          className={`h-3 w-3 rounded-full border-2 flex items-center justify-center
+            ${isRunning ? "border-blue-400 bg-blue-100 dark:bg-blue-900" : ""}
+            ${isCompleted ? "border-emerald-400 bg-emerald-100 dark:bg-emerald-900" : ""}
+            ${!isRunning && !isCompleted ? "border-muted-foreground/30" : ""}`}
         >
-          <Wrench className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500 dark:text-blue-400" />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="font-semibold text-blue-600 dark:text-blue-300">
-                {friendlyToolName(step.tool_name)}
-              </span>
-              {step.status === "running" && (
-                <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
-              )}
-              {step.status === "completed" && (
-                <ChevronRight className="h-3 w-3 text-emerald-500" />
-              )}
-            </div>
-            {step.tool_args && (
-              <p className="text-muted-foreground mt-0.5 line-clamp-2 font-mono text-[11px]">
-                {step.tool_args}
-              </p>
-            )}
-            {step.result && (
-              <p className="mt-1 text-emerald-700 dark:text-emerald-400 line-clamp-3 whitespace-pre-wrap">
-                {step.result}
-              </p>
-            )}
-          </div>
+          {isRunning && <Loader2 className="h-2 w-2 animate-spin text-blue-500" />}
+          {isCompleted && <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
         </div>
-      ))}
+      </div>
+
+      {/* 工具卡片 */}
+      <div
+        className={`min-w-0 flex-1 rounded-md border px-2 py-1.5
+          ${isRunning
+            ? "bg-blue-500/8 dark:bg-blue-400/10 border-blue-500/15 dark:border-blue-400/20"
+            : ""
+          }
+          ${isCompleted
+            ? "bg-emerald-500/8 dark:bg-emerald-400/10 border-emerald-500/15 dark:border-emerald-400/20"
+            : ""
+          }
+          ${!isRunning && !isCompleted ? "bg-muted/40 border-border/50" : ""}`}
+      >
+        <div className="flex items-center gap-1.5">
+          <Wrench
+            className={`h-3 w-3 shrink-0
+              ${isRunning ? "text-blue-500" : ""}
+              ${isCompleted ? "text-emerald-500" : ""}
+              ${!isRunning && !isCompleted ? "text-muted-foreground" : ""}`}
+          />
+          <span
+            className={`font-semibold
+              ${isRunning ? "text-blue-600 dark:text-blue-300" : ""}
+              ${isCompleted ? "text-emerald-600 dark:text-emerald-300" : ""}
+              ${!isRunning && !isCompleted ? "text-muted-foreground" : ""}`}
+          >
+            {friendlyToolName(segment.tool_name || "unknown")}
+          </span>
+          {isRunning && (
+            <span className="text-[10px] text-blue-500">执行中</span>
+          )}
+          {isCompleted && (
+            <span className="text-[10px] text-emerald-500">完成</span>
+          )}
+        </div>
+
+        {segment.tool_args && (
+          <pre className="mt-1 text-[11px] font-mono whitespace-pre-wrap break-all text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 max-h-[120px] overflow-y-auto">
+            {segment.tool_args}
+          </pre>
+        )}
+        {segment.result && (
+          <pre className="mt-1 text-[11px] font-mono whitespace-pre-wrap break-all text-emerald-700 dark:text-emerald-400 bg-muted/50 rounded px-1.5 py-0.5 max-h-[200px] overflow-y-auto">
+            {segment.result}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 按时间线渲染消息段（替代旧的 ToolStepsView） */
+function MessageSegments({ segments }: { segments: MessageSegment[] }) {
+  if (segments.length === 0) return null
+
+  return (
+    <div className="flex flex-col gap-1">
+      {segments.map((seg, idx) => {
+        if (seg.type === "tool") {
+          return <ToolSegmentView key={idx} segment={seg} />
+        }
+        if (seg.type === "text" && seg.content) {
+          return (
+            <div key={idx} className="whitespace-pre-wrap text-sm leading-relaxed">
+              {formatResponse(seg.content)}
+            </div>
+          )
+        }
+        return null
+      })}
     </div>
   )
 }
@@ -365,22 +452,61 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
     )
   }
 
-  // assistant 消息
-  const hasToolSteps = msg.toolSteps && msg.toolSteps.length > 0
+  // assistant 消息 — Bug3 修复：优先使用 segments 按时间线渲染
+  const hasSegments = msg.segments && msg.segments.length > 0
+  const hasToolSteps = !hasSegments && msg.toolSteps && msg.toolSteps.length > 0
   const hasContent = msg.content.trim().length > 0
-  const isStreaming = msg.streaming && !hasContent && !hasToolSteps
+  const isStreaming = msg.streaming && !hasContent && !hasSegments && !hasToolSteps
 
   return (
     <div className="flex justify-start">
       <div
         className="max-w-[85%] rounded-[--radius-standard] px-3 py-2 text-sm leading-relaxed
-        bg-muted/60 text-foreground space-y-1"
+        bg-muted/60 text-foreground"
       >
-        {/* 工具调用步骤 */}
-        {hasToolSteps && <ToolStepsView steps={msg.toolSteps!} />}
+        {/* Bug3 修复: 按 segments 时间线顺序渲染 */}
+        {hasSegments && <MessageSegments segments={msg.segments!} />}
 
-        {/* 文本内容 */}
-        {hasContent && (
+        {/* 向后兼容: 旧格式 toolSteps（无 segments 时使用） */}
+        {hasToolSteps && (
+          <div className="flex flex-col gap-1.5 mb-2">
+            {msg.toolSteps!.map((step, idx) => (
+              <div
+                key={idx}
+                className="flex items-start gap-2 text-xs rounded-md px-2.5 py-1.5
+                  bg-blue-500/8 dark:bg-blue-400/10 border border-blue-500/15 dark:border-blue-400/20"
+              >
+                <Wrench className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500 dark:text-blue-400" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-blue-600 dark:text-blue-300">
+                      {friendlyToolName(step.tool_name)}
+                    </span>
+                    {step.status === "running" && (
+                      <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
+                    )}
+                    {step.status === "completed" && (
+                      <ChevronRight className="h-3 w-3 text-emerald-500" />
+                    )}
+                  </div>
+                  {step.tool_args && (
+                    <p className="text-muted-foreground mt-0.5 line-clamp-2 font-mono text-[11px]">
+                      {step.tool_args}
+                    </p>
+                  )}
+                  {step.result && (
+                    <p className="mt-1 text-emerald-700 dark:text-emerald-400 line-clamp-3 whitespace-pre-wrap">
+                      {step.result}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 文本内容: 无 segments 时显示; 有 segments 但其中不含 text 段时也显示(从后端加载的场景) */}
+        {hasContent && (!hasSegments || !msg.segments!.some(s => s.type === "text")) && (
           <div className="whitespace-pre-wrap">
             {formatResponse(msg.content)}
           </div>
@@ -400,7 +526,13 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 
 // ==================== 聊天面板 ====================
 
-function ChatPanel({ scriptId }: { scriptId: string }) {
+function ChatPanel({
+  scriptId,
+  onTaskCreated,
+}: {
+  scriptId: string
+  onTaskCreated?: (taskId: string) => void
+}) {
   // --- 会话状态 ---
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [currentConvId, setCurrentConvId] = useState<string>("")
@@ -412,6 +544,10 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
   const [isSending, setIsSending] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [_isLoading, setIsLoading] = useState(true)
+
+  // --- 工具执行进度追踪 (inline HITL) ---
+  const [runningTools, setRunningTools] = useState<Map<string, { name: string; args: string }>>(new Map())
+  const [toolErrors, setToolErrors] = useState<Map<string, string>>(new Map())
 
   // --- Refs ---
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -585,6 +721,8 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
     // 累积 assistant 消息的可变状态
     let assistantContent = ""
     let toolSteps: ToolStep[] = []
+    // Bug3: 按时间线记录所有事件段
+    let segments: MessageSegment[] = []
 
     try {
       if (STREAM_FLAG) {
@@ -623,23 +761,44 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
 
                 if (eventType === "text" && event.content) {
                   assistantContent += event.content
+                  // 合并连续文本段，避免每个 token 拆成独立碎片导致渲染宽度异常
+                  const lastSeg = segments[segments.length - 1]
+                  if (lastSeg && lastSeg.type === "text") {
+                    segments = [
+                      ...segments.slice(0, -1),
+                      { ...lastSeg, content: (lastSeg.content || "") + event.content },
+                    ]
+                  } else {
+                    segments = [...segments, { type: "text", content: event.content }]
+                  }
                   setMessages([
                     ...newMessages,
                     {
                       role: "assistant",
                       content: assistantContent,
                       toolSteps: [...toolSteps],
+                      segments: [...segments],
                       streaming: true,
                     },
                   ])
                 } else if (eventType === "thinking" && event.content) {
                   assistantContent += event.content
+                  const lastSeg = segments[segments.length - 1]
+                  if (lastSeg && lastSeg.type === "text") {
+                    segments = [
+                      ...segments.slice(0, -1),
+                      { ...lastSeg, content: (lastSeg.content || "") + event.content },
+                    ]
+                  } else {
+                    segments = [...segments, { type: "text", content: event.content }]
+                  }
                   setMessages([
                     ...newMessages,
                     {
                       role: "assistant",
                       content: assistantContent,
                       toolSteps: [...toolSteps],
+                      segments: [...segments],
                       streaming: true,
                     },
                   ])
@@ -649,30 +808,70 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
                     tool_args: event.tool_args,
                     status: "running",
                   }
+                  // Track running tool for inline progress bar
+                  setRunningTools((prev) => {
+                    const next = new Map(prev)
+                    next.set(event.tool_name || "unknown", {
+                      name: event.tool_name || "unknown",
+                      args: event.tool_args || "",
+                    })
+                    return next
+                  })
                   toolSteps = [...toolSteps, newStep]
+                  // Bug3: 按时间线插入工具调用段
+                  segments = [
+                    ...segments,
+                    {
+                      type: "tool",
+                      tool_name: event.tool_name || "unknown",
+                      tool_args: event.tool_args,
+                      status: "running",
+                    },
+                  ]
                   setMessages([
                     ...newMessages,
                     {
                       role: "assistant",
                       content: assistantContent,
                       toolSteps: [...toolSteps],
+                      segments: [...segments],
                       streaming: true,
                     },
                   ])
                 } else if (eventType === "tool_result") {
                   const toolName = event.tool_name
-                  toolSteps = toolSteps.map((step, idx) => {
-                    const lastMatchIdx = toolSteps.findLastIndex(
-                      (s) => s.tool_name === toolName && s.status === "running",
-                    )
-                    if (idx === lastMatchIdx) {
-                      return {
-                        ...step,
-                        result: event.result,
-                        status: "completed" as const,
-                      }
+                  let toolLastMatchIdx = -1
+                  for (let i = toolSteps.length - 1; i >= 0; i--) {
+                    if (toolSteps[i].tool_name === toolName && toolSteps[i].status === "running") {
+                      toolLastMatchIdx = i
+                      break
                     }
-                    return step
+                  }
+                  toolSteps = toolSteps.map((step, idx) =>
+                    idx === toolLastMatchIdx
+                      ? { ...step, result: event.result, status: "completed" as const }
+                      : step,
+                  )
+                  // Bug3: 更新最后一个匹配的 running 工具段为 completed
+                  let lastRunningIdx = -1
+                  for (let i = segments.length - 1; i >= 0; i--) {
+                    if (segments[i].type === "tool" && segments[i].tool_name === toolName && segments[i].status === "running") {
+                      lastRunningIdx = i
+                      break
+                    }
+                  }
+                  if (lastRunningIdx >= 0) {
+                    segments = segments.map((seg, idx) =>
+                      idx === lastRunningIdx
+                        ? { ...seg, result: event.result, status: "completed" }
+                        : seg,
+                    )
+                  }
+                  // Remove completed tool from runningTools
+                  setRunningTools((prev) => {
+                    const next = new Map(prev)
+                    next.delete(toolName)
+                    return next
                   })
                   setMessages([
                     ...newMessages,
@@ -680,20 +879,63 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
                       role: "assistant",
                       content: assistantContent,
                       toolSteps: [...toolSteps],
+                      segments: [...segments],
                       streaming: true,
                     },
                   ])
                 } else if (eventType === "error") {
                   assistantContent += `\n\n错误: ${event.content || "未知错误"}`
+                  // Track tool error for inline error display
+                  const errName = event.tool_name || "unknown"
+                  setToolErrors((prev) => {
+                    const next = new Map(prev)
+                    next.set(errName, event.content || "未知错误")
+                    return next
+                  })
+                  setRunningTools((prev) => {
+                    const next = new Map(prev)
+                    next.delete(errName)
+                    return next
+                  })
+                  const errorText = `\n\n错误: ${event.content || "未知错误"}`
+                  const lastSeg = segments[segments.length - 1]
+                  if (lastSeg && lastSeg.type === "text") {
+                    segments = [
+                      ...segments.slice(0, -1),
+                      { ...lastSeg, content: (lastSeg.content || "") + errorText },
+                    ]
+                  } else {
+                    segments = [...segments, { type: "text", content: errorText }]
+                  }
                   setMessages([
                     ...newMessages,
                     {
                       role: "assistant",
                       content: assistantContent,
                       toolSteps: [...toolSteps],
+                      segments: [...segments],
                       streaming: true,
                     },
                   ])
+                } else if (eventType === "hitl_continue") {
+                  // HITL: recursion limit reached, prompt user to continue
+                  assistantContent +=
+                    "\n\n---\n> " +
+                    (event.message || "Execution limit reached. Reply 'continue' to resume.")
+                  setMessages([
+                    ...newMessages,
+                    {
+                      role: "assistant",
+                      content: assistantContent,
+                      toolSteps: [...toolSteps],
+                      segments: [...segments],
+                      streaming: false,
+                    },
+                  ])
+                } else if (eventType === "task_created") {
+                  // Path B: 分镜方案被后端检测到并启动了编辑任务
+                  console.log("[Path B] task_created SSE received:", event.task_id)
+                  onTaskCreated?.(event.task_id)
                 } else if (eventType === "done") {
                   break
                 }
@@ -704,18 +946,26 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
           }
         }
 
-        // 保存最终消息（后端已自动保存到数据库，这里只更新本地状态）
+        // 保存最终消息 — Bug2: 同时写入 localStorage 作为备份
         const finalMessages = [
           ...newMessages,
           {
             role: "assistant" as const,
             content: assistantContent,
             toolSteps: toolSteps,
+            segments: segments,
             streaming: false,
           },
         ]
         setMessages(finalMessages)
         updateConversation(convId, { messages: finalMessages })
+        // Bug2: 持久化到 localStorage
+        try {
+          localStorage.setItem(
+            `chat_segments_${convId}`,
+            JSON.stringify(segments),
+          )
+        } catch { /* localStorage 不可用时静默忽略 */ }
       } else {
         // --- 非流式输出 ---
         const response = await fetch(VIDEO_AGENT_CHAT_URL, {
@@ -807,6 +1057,44 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
         </div>
       </div>
 
+      {/* --- 工具执行进度条 (inline HITL) --- */}
+      {runningTools.size > 0 && (
+        <div className="px-4 py-2 border-b border-border/50 bg-muted/30">
+          {Array.from(runningTools.values()).map((t) => (
+            <div key={t.name} className="flex items-center gap-2 text-xs">
+              <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+              <span className="font-medium text-blue-600">{friendlyToolName(t.name)}</span>
+              <span className="text-muted-foreground truncate">执行中...</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* --- 工具错误提示 (inline ErrorCard) --- */}
+      {toolErrors.size > 0 && (
+        <div className="px-4 py-2 border-b border-amber-500/30 bg-amber-500/5">
+          {Array.from(toolErrors.entries()).map(([name, err]) => (
+            <div key={name} className="flex items-start gap-2 text-xs">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-amber-600">
+                  {friendlyToolName(name)} 失败:
+                </span>{" "}
+                <span className="text-muted-foreground line-clamp-2">{err}</span>
+              </div>
+              <button
+                type="button"
+                className="text-xs text-blue-500 hover:underline shrink-0 ml-auto"
+                onClick={() => setToolErrors((prev) => {
+                  const next = new Map(prev); next.delete(name); return next
+                })}
+              >
+                关闭
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* --- 消息列表 --- */}
       <ScrollArea className="flex-1 px-4 py-3" ref={scrollRef}>
         {messages.length === 0 ? (
@@ -866,6 +1154,35 @@ function ChatPanel({ scriptId }: { scriptId: string }) {
 function ScriptDetailPage() {
   const navigate = useNavigate()
   const { scriptId } = Route.useParams()
+
+  // Path B: edit task tracking
+  const [editTaskId, setEditTaskId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (editTaskId) console.log("[Path B] editTaskId set, starting poll:", editTaskId)
+  }, [editTaskId])
+
+  const { data: editProgress } = useQuery({
+    queryKey: ["editProgress", editTaskId],
+    queryFn: async () => {
+      if (!editTaskId) return null
+      const res = await fetch(`${API_BASE_URL}/api/v1/edit/${editTaskId}/progress`, {
+        headers: getAuthHeaders(),
+      })
+      if (!res.ok) return null
+      return res.json() as Promise<{
+        task_id: string; status: string; current_step: number
+        total_steps: number; steps_done: number; steps_failed: number
+        progress_pct: number; current_step_name?: string; error_message?: string
+      }>
+    },
+    enabled: !!editTaskId,
+    refetchInterval: (query) => {
+      const d = query.state.data
+      if (d && (d.status === "running" || d.status === "planning")) return 2000
+      return false
+    },
+  })
 
   const {
     data: scriptData,
@@ -930,7 +1247,36 @@ function ScriptDetailPage() {
       {/* ===== 剧本名 + 聊天对话框 ===== */}
       <section className="space-y-4">
         <h1 className="text-3xl font-black tracking-tight">{script_name}</h1>
-        <ChatPanel scriptId={scriptId} />
+        <ChatPanel
+          scriptId={scriptId}
+          onTaskCreated={(tid) => setEditTaskId(tid)}
+        />
+
+        {/* Path B: 编辑任务实时进度 */}
+        {editProgress && editProgress.status !== "completed" && editProgress.status !== "failed" && (
+          <ControlBar
+            taskId={editProgress.task_id}
+            status={editProgress.status}
+            currentStep={editProgress.current_step}
+            totalSteps={editProgress.total_steps}
+            progressPct={editProgress.progress_pct}
+            currentStepName={editProgress.current_step_name}
+          />
+        )}
+        {editProgress && editProgress.status === "failed" && editProgress.error_message && (
+          <ErrorCard
+            taskId={editProgress.task_id}
+            stepIndex={editProgress.current_step}
+            stepName={editProgress.current_step_name || "unknown"}
+            error={editProgress.error_message}
+            onDismiss={() => setEditTaskId(null)}
+          />
+        )}
+        {editProgress && editProgress.status === "completed" && (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-600">
+            编辑任务已完成！共 {editProgress.total_steps} 步。
+          </div>
+        )}
       </section>
 
       {/* ===== 角色四视图 ===== */}

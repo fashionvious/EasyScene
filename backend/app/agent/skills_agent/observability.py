@@ -79,3 +79,44 @@ def create_manual_span(trace_id: str, name: str, input_data: dict) -> str | None
         input=input_data,
     )
     return span.id
+
+
+def end_manual_span(
+    span_id: str,
+    output_data: dict | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+) -> None:
+    """
+    结束手动 span，提供输出更新 + 异常安全的 end()。
+
+    Langfuse v3 中 span() 返回 Span 对象，直接调用 .end() 即可。
+    """
+    client = get_langfuse_client()
+    if client is None:
+        return
+    try:
+        span = client.span(id=span_id)
+        if output_data:
+            span.update(output=output_data)
+        if level:
+            span.update(level=level)
+        if status_message:
+            span.update(status_message=status_message)
+        span.end()
+    except Exception as e:
+        logger.warning("end_manual_span failed: %s", e)
+
+
+def get_current_trace_id() -> str | None:
+    """
+    尝试从当前 Langfuse 上下文中获取 trace_id。
+
+    优先从 Langfuse SDK 的内置 context 中提取。
+    若不可用（版本差异/未初始化），返回 None。
+    """
+    try:
+        import langfuse
+        return langfuse.get_current_trace_id()  # type: ignore[attr-defined]
+    except (ImportError, AttributeError, Exception):
+        return None

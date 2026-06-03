@@ -1,0 +1,16 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Creating new project: 缉凶者6_丁锋片头
+[*] Intelligent TTS Trace: speaker=zh_male_huoli, dev=2900977030553273, iid=2314914062247833
+[+] SAMI Success: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft\缉凶者6_丁锋片头\temp_assets\tts_a3eb3197.ogg
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpw4a1_f3k.py", line 68, in <module>
+    project.add_transition_simple("模糊", "3s", duration="0.5s")
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\core\vfx_ops.py", line 43, in add_transition_simple
+    trans = draft.Transition(trans_type, safe_tim(duration))
+            ^^^^^^^^^^^^^^^^
+AttributeError: module 'pyJianYingDraft' has no attribute 'Transition'. Did you mean: 'TransitionType'?
+

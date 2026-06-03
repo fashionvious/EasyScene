@@ -1,0 +1,14 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Creating new project: 缉凶者6_拼接_模糊转场
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpz7q5noap.py", line 75, in <module>
+    project.add_transition_simple("模糊", video_segment=seg2, duration="0.5s")
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\core\vfx_ops.py", line 43, in add_transition_simple
+    trans = draft.Transition(trans_type, safe_tim(duration))
+            ^^^^^^^^^^^^^^^^
+AttributeError: module 'pyJianYingDraft' has no attribute 'Transition'. Did you mean: 'TransitionType'?
+

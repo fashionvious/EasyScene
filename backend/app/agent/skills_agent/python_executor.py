@@ -167,6 +167,7 @@ def _trim_project_duration(project):
         capture_output: bool = True,
         max_retries: int = 0,
         keep_temp_on_error: bool = True,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """
         执行 Python 代码
@@ -179,6 +180,7 @@ def _trim_project_duration(project):
                 Python 执行器仅对 TimeoutExpired 和 OSError 重试，
                 returncode != 0 不重试（LLM 代码逻辑错误重试无意义）
             keep_temp_on_error: 失败时是否保留临时文件（默认 True）
+            trace_id: Langfuse trace_id，用于关联手动 span（None 时跳过）
 
         Returns:
             执行结果，包含 output, error, raw_output_truncated,
@@ -205,6 +207,24 @@ def _trim_project_duration(project):
         env["PYTHONUTF8"] = "1"
         total_attempts = max(1, max_retries + 1)
         last_error = None
+
+        # Langfuse 手动 span
+        langfuse_span = None
+        if trace_id:
+            try:
+                from .observability import get_langfuse_client
+            except ImportError:
+                from observability import get_langfuse_client
+            langfuse = get_langfuse_client()
+            if langfuse:
+                langfuse_span = langfuse.span(
+                    trace_id=trace_id,
+                    name="python_executor:execute_jyproject",
+                    input={
+                        "code_length": len(code),
+                        "include_bootstrap": include_bootstrap,
+                    },
+                )
 
         for attempt in range(total_attempts):
             result = None
@@ -264,6 +284,20 @@ def _trim_project_duration(project):
                 else:
                     temp_file_out = temp_file
 
+                if langfuse_span:
+                    langfuse_span.update(output={
+                        "success": is_success,
+                        "returncode": result.returncode,
+                        "output_bytes": output_bytes,
+                        "truncated": output_truncated,
+                    })
+                    if not is_success:
+                        langfuse_span.update(
+                            level="ERROR",
+                            status_message=truncate_output(error),
+                        )
+                    langfuse_span.end()
+
                 return {
                     "success": is_success,
                     "output": summarized_output if is_success else summarized_output,
@@ -276,6 +310,12 @@ def _trim_project_duration(project):
 
             except subprocess.TimeoutExpired:
                 last_error = f"代码执行超时（{self.timeout}秒）"
+                if langfuse_span:
+                    langfuse_span.update(
+                        level="WARNING",
+                        status_message=f"timeout({self.timeout}s)",
+                    )
+                    langfuse_span.end()
                 logger.warning(
                     "[attempt %d/%d] timeout after %ds",
                     attempt + 1,
@@ -294,6 +334,11 @@ def _trim_project_duration(project):
 
             except Exception as e:
                 # 非预期异常不重试，保留源代码供排查
+                if langfuse_span:
+                    langfuse_span.update(
+                        level="ERROR", status_message=str(e),
+                    )
+                    langfuse_span.end()
                 return {
                     "success": False,
                     "error": f"执行失败: {str(e)}",

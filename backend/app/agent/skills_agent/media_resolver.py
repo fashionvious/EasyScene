@@ -115,13 +115,21 @@ class MediaResolver:
         candidates = []
         query_lower = query.lower()
 
+        # 如果 query 包含扩展名，剥离后用更精确的模式匹配
+        query_no_ext = query_lower
+        for known_ext in self.ALL_MEDIA_EXTS:
+            if query_lower.endswith(known_ext):
+                query_no_ext = query_lower[:-len(known_ext)]
+                break
+
         for search_dir in self.search_paths:
             for ext in self.ALL_MEDIA_EXTS:
-                pattern = str(search_dir / "**" / f"*{query_lower}*{ext.lstrip('.')}")
-                # 用 glob 递归搜索
+                pattern = str(
+                    search_dir / "**" / f"*{query_no_ext}*.{ext.lstrip('.')}"
+                )
                 for match in glob.glob(pattern, recursive=True):
                     candidates.append(match)
-                # 也搜索精确前缀
+                # 也搜索精确前缀（原始 query）
                 pattern2 = str(search_dir / "**" / f"{query_lower}*")
                 for match in glob.glob(pattern2, recursive=True):
                     if match not in candidates:

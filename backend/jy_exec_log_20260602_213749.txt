@@ -1,0 +1,14 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Corrupted draft detected (missing json): 缉凶者6_7_变清晰特效
+Auto-healing: Removing corrupted folder...
+Creating new project: 缉凶者6_7_变清晰特效
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmp4eg1qla7.py", line 72, in <module>
+    draft = project._draft
+            ^^^^^^^^^^^^^^
+AttributeError: 'JyProject' object has no attribute '_draft'
+

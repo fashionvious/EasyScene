@@ -1,0 +1,14 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Corrupted draft detected (missing json): 缉凶者6_7_变清晰特效
+Auto-healing: Removing corrupted folder...
+Creating new project: 缉凶者6_7_变清晰特效
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpvm81lt50.py", line 62, in <module>
+    with open(draft_path, 'r', encoding='utf-8') as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\ali\\AppData\\Local\\JianyingPro\\User Data\\Projects\\com.lveditor.draft\\缉凶者6_7_变清晰特效\\draft_content.json'
+

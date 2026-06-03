@@ -1,0 +1,16 @@
+=== STDOUT ===
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmp94e2az6l.py", line 38, in <module>
+    from jy_wrapper import JyProject
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 990, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1080, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1203, in path_stats
+  File "<frozen importlib._bootstrap_external>", line 147, in _path_stat
+KeyboardInterrupt
+

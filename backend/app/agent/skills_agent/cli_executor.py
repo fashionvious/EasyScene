@@ -273,6 +273,7 @@ class CLIScriptExecutor:
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     timeout=timeout,
                     cwd=str(self.scripts_dir),
                 )
@@ -380,26 +381,60 @@ def create_cli_executor_tool(scripts_dir: str):
     executor = CLIScriptExecutor(scripts_dir)
     
     @tool
-    def execute_cli_script(script_name: str) -> str:
+    def execute_cli_script(
+        script_name: str,
+        query: str = "",
+        category: str = "",
+        text: str = "",
+        output: str = "",
+        speaker: str = "zh_male_huoli",
+        video: str = "",
+        draft_name: str = "",
+        output_path: str = "",
+        resolution: str = "1080p",
+        framerate: int = 30,
+        url: str = "",
+        duration: int = 10,
+    ) -> str:
         """
         执行 jianying-editor-skill 中的 CLI 脚本。
-        
+
         可用脚本:
-        - asset_search: 搜索特效、转场、动画等素材
-        - auto_exporter: 无头导出草稿为 MP4/SRT
+        - asset_search: 搜索特效/转场/动画 (传 query + category)
+        - auto_exporter: 导出草稿为 MP4 (传 draft_name + output_path + resolution + framerate)
         - draft_inspector: 检查草稿列表和详情
-        - movie_commentary_builder: 从故事板生成解说视频
-        - sync_jy_assets: 同步剪映 App 中的素材
+        - movie_commentary_builder: 从故事板生成解说视频 (传 video + json)
+        - sync_jy_assets: 同步剪映 App 素材
         - api_validator: 环境诊断
-        - smart_zoomer: 智能变焦
-        - smart_rough_cut: 智能粗剪
-        - universal_tts: TTS 语音合成
-        - web_recorder: Web 录屏
-        
-        Args:
-            script_name: 脚本名称（如 'asset_search', 'auto_exporter'）
+        - smart_zoomer: 智能变焦 (传 video)
+        - smart_rough_cut: 智能粗剪 (传 video)
+        - universal_tts: TTS 语音合成 (传 text + output + speaker)
+        - web_recorder: Web 录屏 (传 url + duration + output)
+
+        参数说明:
+            script_name: 脚本名称 (必填)
+            query: 搜索关键词 (asset_search)
+            category: 素材分类 filters/transitions/text_animations (asset_search)
+            text: TTS 文本内容 (universal_tts)
+            output: 输出文件路径 (universal_tts, web_recorder)
+            speaker: 发音人 (universal_tts, 默认 zh_male_huoli)
+            video: 视频文件路径 (smart_rough_cut, smart_zoomer)
+            draft_name: 草稿名称 (auto_exporter)
+            output_path: 导出输出路径 (auto_exporter)
+            resolution: 分辨率 480/720/1080/2K/4K (auto_exporter)
+            framerate: 帧率 24/25/30/50/60 (auto_exporter)
+            url: 要录制的网址 (web_recorder)
+            duration: 录制时长秒数 (web_recorder)
         """
-        result = executor.execute(script_name, {})
+        # 构建 args：只传非空的参数
+        all_kwargs = {
+            "query": query, "category": category, "text": text, "output": output,
+            "speaker": speaker, "video": video, "draft_name": draft_name,
+            "output_path": output_path, "resolution": resolution,
+            "framerate": framerate, "url": url, "duration": duration,
+        }
+        args = {k: v for k, v in all_kwargs.items() if v not in ("", 0)}
+        result = executor.execute(script_name, args)
         
         if result["success"]:
             output = result.get("output", "")

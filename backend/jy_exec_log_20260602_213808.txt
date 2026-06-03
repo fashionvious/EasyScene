@@ -1,0 +1,17 @@
+=== STDOUT ===
+Project Root: C:\Users\ali\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft
+Corrupted draft detected (missing json): 缉凶者6_7_变清晰特效
+Auto-healing: Removing corrupted folder...
+Creating new project: 缉凶者6_7_变清晰特效
+script attrs: ['_get_track', 'add_effect', 'add_filter', 'add_material', 'add_segment', 'add_track', 'content', 'dump', 'dumps', 'duration', 'fps', 'get_imported_track', 'height', 'import_srt', 'import_track', 'imported_materials', 'imported_tracks', 'inspect_material', 'load_template', 'maintrack_adsorb', 'materials', 'replace_material_by_name', 'replace_material_by_seg', 'replace_text', 'save', 'save_path', 'tracks', 'width']
+
+tracks: {'VideoTrack': <pyJianYingDraft.track.Track object at 0x00000177F30010D0>}
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpjtuoxa_2.py", line 67, in <module>
+    print(f"  Track type: {t.type}, segments: {len(t.segments)}")
+                           ^^^^^^
+AttributeError: 'str' object has no attribute 'type'
+

@@ -273,11 +273,76 @@ _ws_router = APIRouter()
 
 @_ws_router.websocket("/ws/edit/{task_id}")
 async def websocket_progress(websocket: WebSocket, task_id: str):
-    """实时推送任务进度（当前阶段轮询 PG，req_19 升级为 Redis PubSub）。"""
+    """实时推送任务进度（Redis PubSub，不可用时降级为轮询 PG）。"""
     await websocket.accept()
+
+    pubsub = None
     try:
+        from app.agent.utils.redis import get_edit_task_redis_manager
+        redis_mgr = get_edit_task_redis_manager()
+        pubsub = redis_mgr.redis.pubsub()
+        channel = f"edit_progress:{task_id}"
+        await pubsub.subscribe(channel)
+
+        # 发送初始状态
+        state = await redis_mgr.get_task_state(task_id)
+        if state:
+            await websocket.send_json({
+                "type": "progress",
+                "task_id": task_id,
+                "status": state.status,
+                "current_step": state.current_step,
+                "total_steps": state.total_steps,
+                "progress_pct": state.progress_pct,
+                "preview_path": state.metadata.get("preview_path"),
+            })
+
+        # 持续监听 Redis PubSub
         while True:
-            await websocket.receive_text()
-            await websocket.send_json({"task_id": task_id, "progress": 0})
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=30,
+            )
+            if message and message["type"] == "message":
+                import json as _json
+                data = _json.loads(message["data"])
+                await websocket.send_json(data)
+
     except WebSocketDisconnect:
         pass
+    except Exception:
+        # Redis PubSub 不可用 → 降级为轮询
+        import asyncio as _asyncio
+        from sqlmodel import Session as _Session
+        from app.core.db import engine as _engine
+        from app import crud as _crud
+
+        while True:
+            try:
+                with _Session(_engine) as session:
+                    task = _crud.get_edit_task(
+                        session=session, task_id=task_id,
+                    )
+                    if task:
+                        steps = _crud.get_steps_by_task(
+                            session=session, task_id=task_id,
+                        )
+                        done = sum(1 for s in steps if s.status == "done")
+                        await websocket.send_json({
+                            "type": "progress",
+                            "task_id": task_id,
+                            "status": task.status,
+                            "current_step": task.current_step,
+                            "total_steps": task.total_steps,
+                            "progress_pct": round(
+                                done / max(task.total_steps, 1) * 100, 1,
+                            ),
+                        })
+                    await _asyncio.sleep(2)
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                await _asyncio.sleep(2)
+    finally:
+        if pubsub:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()

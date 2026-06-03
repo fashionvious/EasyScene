@@ -1,0 +1,17 @@
+=== STDOUT ===
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmp9d1cql49.py", line 30, in <module>
+    raise ImportError(
+ImportError: Could not find jianying-editor/scripts/jy_wrapper.py
+Tried:
+- C:\Users\ali\AppData\Local\Temp\pytest-of-ali\pytest-2\test_trace_id_none_no_span_cre0
+- D:\1-6 AI_Agent\2_local_project\EasyScene\backend\.agent\skills\jianying-editor
+- D:\1-6 AI_Agent\2_local_project\EasyScene\backend\.trae\skills\jianying-editor
+- D:\1-6 AI_Agent\2_local_project\EasyScene\backend\.claude\skills\jianying-editor
+- D:\1-6 AI_Agent\2_local_project\EasyScene\backend\skills\jianying-editor
+- D:\1-6 AI_Agent\2_local_project\EasyScene\backend\.agent\skills\jianying-editor
+- D:\1-6 AI_Agent\2_local_project\EasyScene
+

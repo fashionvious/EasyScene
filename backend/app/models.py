@@ -433,6 +433,7 @@ class ChatMessage(ChatMessageBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     conversation_id: uuid.UUID = Field(foreign_key="conversation.id", nullable=False, ondelete="CASCADE")
     create_time: datetime = Field(default_factory=datetime.utcnow)
+    tool_steps_json: str | None = Field(default=None)
 
     # Relationships
     conversation: Conversation | None = Relationship(back_populates="messages")
@@ -443,6 +444,7 @@ class ChatMessagePublic(ChatMessageBase):
     id: uuid.UUID
     conversation_id: uuid.UUID
     create_time: datetime
+    tool_steps_json: str | None = None
 
 
 class ChatMessagesPublic(SQLModel):

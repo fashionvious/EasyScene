@@ -1,0 +1,9 @@
+=== STDOUT ===
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpst4pjlf7.py", line 54, in <module>
+    from pyJianYingDraft import draft_script, transition
+ImportError: cannot import name 'draft_script' from 'pyJianYingDraft' (D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\vendor\pyJianYingDraft\__init__.py)
+

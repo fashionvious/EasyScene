@@ -1,0 +1,11 @@
+=== STDOUT ===
+Transition-related attrs in pyJianYingDraft: ['TransitionType', 'Transition_type']
+
+
+=== STDERR ===
+Traceback (most recent call last):
+  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpau27tcpp.py", line 63, in <module>
+    src_file = inspect.getfile(project.add_transition_simple)
+                               ^^^^^^^
+NameError: name 'project' is not defined. Did you mean: 'JyProject'?
+
