@@ -123,11 +123,13 @@ class StepOrchestrator:
                         step.status = StepStatus.FAILED
                         step.error = str(result)
                         plan.status = TaskStatus.PAUSED
+                        await self._report_progress(plan, step, "paused")
                     elif isinstance(result, Exception):
                         step.status = StepStatus.FAILED
                         step.error = str(result)
                         if plan.status != TaskStatus.FAILED:
                             plan.status = TaskStatus.FAILED
+                        await self._report_progress(plan, step, "failed")
                     else:
                         step.status = StepStatus.DONE
                         step.result = result
@@ -145,6 +147,7 @@ class StepOrchestrator:
                     # NOTIFY_USER: 步骤已标记 FAILED，plan 设为 PAUSED
                     plan.status = TaskStatus.PAUSED
                     await self._save_task_status(plan)
+                    await self._report_progress(plan, step, "paused")
                     break
                 except Exception as e:
                     step.error = str(e)
@@ -152,26 +155,15 @@ class StepOrchestrator:
                     plan.status = TaskStatus.FAILED
                     await self._save_step_checkpoint(plan.task_id, step)
                     await self._save_task_status(plan)
+                    await self._report_progress(plan, step, "failed")
                     break
                 step.finished_at = time.time()
                 await self._save_step_checkpoint(plan.task_id, step)
 
             plan.current_index += len(batch)
 
-            # 更新 Redis 实时进度
-            if self.redis:
-                try:
-                    await self.redis.update_step_progress(
-                        plan.task_id,
-                        step_index=plan.current_index - 1,
-                        step_name=batch[-1].tool if batch else "",
-                        step_status=plan.status.value,
-                        progress_pct=round(
-                            plan.current_index / len(plan.steps) * 100, 1,
-                        ),
-                    )
-                except Exception:
-                    logger.warning("Redis 进度更新失败，继续执行", exc_info=True)
+            # 更新进度
+            await self._report_progress(plan, batch[-1] if batch else plan.steps[plan.current_index])
 
             if plan.status == TaskStatus.FAILED:
                 await self._save_task_status(plan)
@@ -279,6 +271,30 @@ class StepOrchestrator:
 
     # ---- internal ----
 
+    async def _report_progress(self, plan: EditPlan, step: StepSpec, status_hint: str = "") -> None:
+        """统一进度上报：Redis 优先，降级到日志。"""
+        progress_pct = round(
+            plan.current_index / len(plan.steps) * 100, 1,
+        ) if plan.steps else 0
+        if self.redis:
+            try:
+                await self.redis.update_step_progress(
+                    plan.task_id,
+                    step_index=plan.current_index,
+                    step_name=step.tool,
+                    step_status=status_hint or plan.status.value,
+                    progress_pct=progress_pct,
+                )
+            except Exception:
+                logger.warning("Redis 进度更新失败", exc_info=True)
+        else:
+            logger.info(
+                "进度 [%s]: %s/%s (%s%%) — %s",
+                status_hint or plan.status.value,
+                plan.current_index, len(plan.steps), progress_pct,
+                step.tool,
+            )
+
     async def _execute_single_step(self, plan: EditPlan, step: StepSpec) -> Any:
         """执行单个步骤。storyboard action → JyProject code → 执行。"""
         step.status = StepStatus.RUNNING
@@ -299,9 +315,18 @@ class StepOrchestrator:
             if spec is not None and spec.exec_mode == "async":
                 result = await self._dispatch_celery(step, spec, actual_args)
             elif spec is not None:
-                result = await asyncio.to_thread(spec.func, **actual_args)
+                timeout = getattr(spec, "timeout", 300) or 300
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(spec.func, **actual_args),
+                    timeout=timeout,
+                )
             else:
                 raise ValueError(f"未知工具 '{step.tool}' 且 ToolRegistry 不可用")
+
+            # 检查 execute_jyproject_code / execute_cli_script 的字符串返回值
+            # 这些工具失败时返回 "执行失败: ..." 而非抛异常
+            if isinstance(result, str) and result.startswith("执行失败"):
+                raise RuntimeError(result)
 
             step.result = result
             step.status = StepStatus.DONE
@@ -377,8 +402,14 @@ class StepOrchestrator:
             except Exception:
                 logger.warning("Redis celery_task_id 关联失败", exc_info=True)
 
-        # 异步轮询等待完成
+        # 异步轮询等待完成（带超时保护）
+        poll_timeout = getattr(spec, "timeout", 600) or 600
+        deadline = time.time() + poll_timeout
         while True:
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"Celery 任务 ({action}) 在 {poll_timeout}s 内未完成"
+                )
             ready = await asyncio.to_thread(result.ready)
             if ready:
                 break
@@ -509,23 +540,24 @@ class StepPausedError(Exception):
 def _build_jyproject_code(args: dict) -> str:
     """从单个 storyboard action 生成 JyProject Python 代码。
 
-    每个 action 生成独立的 project → add → save 脚本。
+    第 0 步: JyProject(name, overwrite=True)  创建新草稿
+    第 1+ 步: JyProject(name, overwrite=False) 加载已有草稿追加
     所有 import 由 bootstrap 自动注入。
     """
     action = args.get("action", "")
     project_name = args.get("project_name", "未命名项目")
     step_index = args.get("step_index", 0)
 
-    # 每个步骤创建独立 project（后续步骤通过 draft_name 复用草稿）
     project_var = f"project_{step_index}"
+    overwrite_flag = "True" if step_index == 0 else "False"
     lines = [
-        f'{project_var} = JyProject("{project_name}")',
+        f'{project_var} = JyProject("{project_name}", overwrite={overwrite_flag})',
     ]
 
     if action == "import_media":
         file_path = args.get("file", "")
         start = args.get("start_time", "0s")
-        track = args.get("track", "main")
+        track = args.get("track", args.get("track_name", "VideoTrack"))
         lines.append(
             f'{project_var}.add_media_safe(r"{file_path}", "{start}", track_name="{track}")'
         )
@@ -542,24 +574,35 @@ def _build_jyproject_code(args: dict) -> str:
         text = args.get("text", "")
         speaker = args.get("speaker", "zh_male_huoli")
         start = args.get("start_time", "0s")
+        track = args.get("track_name", "")
+        track_arg = f', track_name="{track}"' if track else ""
         lines.append(
-            f'{project_var}.add_tts_intelligent("{text}", speaker="{speaker}", start_time="{start}")'
+            f'{project_var}.add_tts_intelligent("{text}", speaker="{speaker}", start_time="{start}"{track_arg})'
         )
 
     elif action == "add_audio":
         file_path = args.get("file", args.get("audio_path", ""))
         start = args.get("start_time", "0s")
-        track = args.get("track", "audio")
+        track = args.get("track", args.get("track_name", "AudioTrack"))
         lines.append(
             f'{project_var}.add_audio_safe(r"{file_path}", "{start}", track_name="{track}")'
         )
 
     elif action == "add_effect":
-        effect_name = args.get("effect_name", "")
+        effect_name = args.get("effect_name", args.get("effect", ""))
         start = args.get("start_time", "0s")
         duration = args.get("duration", "3s")
         lines.append(
             f'{project_var}.add_effect_simple("{effect_name}", start_time="{start}", duration="{duration}")'
+        )
+
+    elif action == "add_filter":
+        filter_name = args.get("filter_name", args.get("filter", ""))
+        start = args.get("start_time", "0s")
+        duration = args.get("duration", "3s")
+        intensity = args.get("intensity", "100.0")
+        lines.append(
+            f'{project_var}.add_filter_simple("{filter_name}", start_time="{start}", duration="{duration}", intensity={intensity})'
         )
 
     elif action == "add_transition":

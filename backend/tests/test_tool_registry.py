@@ -172,15 +172,14 @@ class TestToolRegistry:
 
 
 # ---------------------------------------------------------------------------
-# ToolRegistry — default 7-tool integration smoke test
+# ToolRegistry — default 22-tool integration smoke test (8 core + 14 Phase 1-2)
 # ---------------------------------------------------------------------------
 
-class TestDefaultSevenToolRegistry:
-    """
-    验证 jianying_agent.py 中创建的实际 7 工具注册表。
+class TestDefaultToolRegistry:
+    """验证 jianying_agent.py 中创建的实际 22 工具注册表。
 
-    注意：execute_jyproject_code 的 exec_mode 为 "sync"（不是 async），
-    因此 sync 工具共 6 个（不是 PRD DoD 中写的 5 个）。
+    8 个 core tools + 14 个 Phase 1-2 剪辑工具 = 22 工具。
+    sync: 21, async: 1 (execute_cli_script).
     """
 
     @pytest.fixture
@@ -197,14 +196,14 @@ class TestDefaultSevenToolRegistry:
         _, mw = create_jianying_agent(skill_root=skill_root)
         return mw
 
-    def test_registry_has_7_tools(self, middleware):
-        assert len(middleware.registry) == 7
-        assert len(middleware.tools) == 7
+    def test_registry_has_22_tools(self, middleware):
+        assert len(middleware.registry) == 22
+        # tools list may be longer due to duplicate-registration func append
+        assert len(middleware.tools) == 22
 
     def test_sync_tools_count(self, middleware):
         sync = middleware.registry.get_tools_by_exec_mode("sync")
-        # 6 sync (PRD 的 DoD 写"5 个"是漏数了 execute_jyproject_code)
-        assert len(sync) == 6
+        assert len(sync) == 21
 
     def test_async_tools_count(self, middleware):
         async_tools = middleware.registry.get_tools_by_exec_mode("async")
@@ -246,9 +245,51 @@ class TestDefaultSevenToolRegistry:
                 f"read tool '{spec.name}' should be concurrency_safe"
             )
 
-    def test_registry_get_all_tools_equals_middleware_tools(self, middleware):
-        from operator import attrgetter
+    # ── Phase 1 tools smoke tests ──
 
+    _PHASE1_TOOLS = [
+        ("apply_jcut",            "timeline_ops",    "write", 120),
+        ("apply_lcut",            "timeline_ops",    "write", 120),
+        ("reorder_segments",      "timeline_ops",    "write", 120),
+        ("apply_split_screen",    "layout_ops",      "write", 120),
+        ("add_dual_subtitles",    "subtitle_ops",    "write", 120),
+        ("apply_zoom_transition", "transition_ops",  "write", 120),
+        ("apply_push_transition", "transition_ops",  "write", 120),
+    ]
+
+    @pytest.mark.parametrize("name,handler,category,timeout", _PHASE1_TOOLS)
+    def test_phase1_tool_registered(self, middleware, name, handler, category, timeout):
+        spec = middleware.registry.get_spec(name)
+        assert spec is not None, f"Phase 1 tool '{name}' not registered"
+        assert spec.handler == handler
+        assert spec.category == category
+        assert spec.exec_mode == "sync"
+        assert spec.concurrency_safe is False
+        assert spec.timeout == timeout
+
+    # ── Phase 2 tools smoke tests ──
+
+    _PHASE2_TOOLS = [
+        ("inject_mask_transition",  "draft_injector", "write", 60),
+        ("inject_color_transition", "draft_injector", "write", 60),
+        ("add_karaoke_subtitle",    "draft_injector", "write", 120),
+        ("inject_subtitle_slide",   "draft_injector", "write", 60),
+        ("apply_bgm_ducking",       "draft_injector", "write", 120),
+        ("apply_audio_speed",       "draft_injector", "write", 60),
+        ("apply_speed_ramp",        "draft_injector", "write", 60),
+    ]
+
+    @pytest.mark.parametrize("name,handler,category,timeout", _PHASE2_TOOLS)
+    def test_phase2_tool_registered(self, middleware, name, handler, category, timeout):
+        spec = middleware.registry.get_spec(name)
+        assert spec is not None, f"Phase 2 tool '{name}' not registered"
+        assert spec.handler == handler
+        assert spec.category == category
+        assert spec.exec_mode == "sync"
+        assert spec.concurrency_safe is False
+        assert spec.timeout == timeout
+
+    def test_registry_get_all_tools_equals_middleware_tools(self, middleware):
         reg_tools = middleware.registry.get_all_tools()
         mw_tools = middleware.tools
 

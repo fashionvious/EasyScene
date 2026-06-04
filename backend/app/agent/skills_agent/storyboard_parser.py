@@ -27,6 +27,7 @@ ACTION_TO_TOOL: dict[str, str] = {
     "add_tts":          "execute_jyproject_code",
     "add_audio":        "execute_jyproject_code",
     "add_effect":       "execute_jyproject_code",
+    "add_filter":       "execute_jyproject_code",
     "add_transition":   "execute_jyproject_code",
     "add_subtitle":     "execute_jyproject_code",
     # CLI 脚本类（通过 execute_cli_script 工具）

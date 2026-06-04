@@ -36,23 +36,57 @@ except ImportError:
 try:
     from .token_utils import estimate_tokens, calculate_context_budget
     from .tool_registry import ToolSpec, ToolRegistry
+    # Phase 1-2 剪辑工具集
+    from .tools.timeline_ops import apply_jcut, apply_lcut, reorder_segments
+    from .tools.layout_ops import apply_split_screen
+    from .tools.subtitle_ops import add_dual_subtitles
+    from .tools.transition_ops import apply_zoom_transition, apply_push_transition
+    from .tools.draft_injector import (
+        inject_mask_transition,
+        inject_color_transition,
+        add_karaoke_subtitle,
+        inject_subtitle_slide,
+        apply_bgm_ducking,
+        apply_audio_speed,
+        apply_speed_ramp,
+    )
 except ImportError:
     from token_utils import estimate_tokens, calculate_context_budget
     from tool_registry import ToolSpec, ToolRegistry
+    from tools.timeline_ops import apply_jcut, apply_lcut, reorder_segments
+    from tools.layout_ops import apply_split_screen
+    from tools.subtitle_ops import add_dual_subtitles
+    from tools.transition_ops import apply_zoom_transition, apply_push_transition
+    from tools.draft_injector import (
+        inject_mask_transition,
+        inject_color_transition,
+        add_karaoke_subtitle,
+        inject_subtitle_slide,
+        apply_bgm_ducking,
+        apply_audio_speed,
+        apply_speed_ramp,
+    )
 
 
 # 固定文本模板（工具使用指南 + 工作流程），纳入 token 预算计算
 GUIDE_TEMPLATE = """
-## 工具使用指南
+## 视频剪辑专用工具速查
 
-1. **resolve_media**: 根据文件名查找视频/音频/图片的完整路径（用户只需提供文件名，无需完整路径）
-2. **list_media**: 列出所有可用的媒体文件
-3. **load_skill**: 当需要详细了解某个技能时，使用此工具加载完整内容
-4. **execute_cli_script**: 执行 CLI 脚本（如素材搜索、自动导出等）
-5. **list_cli_scripts**: 列出所有可用的 CLI 脚本
-6. **execute_jyproject_code**: 执行 JyProject 编排代码（用于复杂剪辑流）
-7. **validate_jyproject_code**: 验证代码语法（不实际执行）
-8. **submit_storyboard**: 提交分镜方案 JSON，系统自动分步执行
+- **resolve_media** / **list_media** → 素材文件解析
+- **execute_cli_script** / **list_cli_scripts** → CLI 脚本（素材搜索/导出/TTS）
+- **execute_jyproject_code** / **validate_jyproject_code** → 复杂编排代码
+- **apply_jcut** / **apply_lcut** → J-Cut / L-Cut 音视频分离
+- **apply_split_screen** → 分屏布局
+- **add_dual_subtitles** → 双语字幕
+- **apply_zoom_transition** / **apply_push_transition** → 转场效果
+- **reorder_segments** → 片段重排
+- **apply_bgm_ducking** / **apply_audio_speed** / **apply_speed_ramp** → 音频处理
+- **inject_mask_transition** / **inject_color_transition** → 高级转场注入
+- **add_karaoke_subtitle** / **inject_subtitle_slide** → 高级字幕效果
+- **submit_storyboard** → 分镜方案提交
+- **load_skill** → 加载技能完整文档
+
+> 每个工具的具体参数见其 docstring，调用时 LLM 会自动读取。
 
 ## 工作流程
 
@@ -275,6 +309,109 @@ class JianYingSkillMiddleware(AgentMiddleware):
                 exec_mode="sync", concurrency_safe=False, timeout=10,
                 description="提交分镜方案 JSON，系统自动分步执行并显示实时进度。编辑任务必须调用此工具完成。",
             ),
+            # ── Phase 1 时间线编排 (timeline_ops) ──
+            ToolSpec(
+                name="apply_jcut", handler="timeline_ops",
+                category="write", func=apply_jcut,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="J-Cut 声音先行 — 音频比视频先开始制造悬念感",
+            ),
+            ToolSpec(
+                name="apply_lcut", handler="timeline_ops",
+                category="write", func=apply_lcut,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="L-Cut 画面先行 — 视频结束后音频继续延伸增强叙事流畅感",
+            ),
+            ToolSpec(
+                name="reorder_segments", handler="timeline_ops",
+                category="write", func=reorder_segments,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="片段重排 — 按新顺序重建已有草稿中的视频片段",
+            ),
+            # ── Phase 1 分屏布局 (layout_ops) ──
+            ToolSpec(
+                name="apply_split_screen", handler="layout_ops",
+                category="write", func=apply_split_screen,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="分屏效果 — 多段视频同时播放于同一画面，支持5种布局模板",
+            ),
+            # ── Phase 1 多语言字幕 (subtitle_ops) ──
+            ToolSpec(
+                name="add_dual_subtitles", handler="subtitle_ops",
+                category="write", func=add_dual_subtitles,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="多语言字幕 — 为已有草稿添加严格时间对齐的双轨双语字幕",
+            ),
+            # ── Phase 1 转场效果 (transition_ops) ──
+            ToolSpec(
+                name="apply_zoom_transition", handler="transition_ops",
+                category="write", func=apply_zoom_transition,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="缩放转场 — 前段放大→后段缩小产生连续缩放视觉流",
+            ),
+            ToolSpec(
+                name="apply_push_transition", handler="transition_ops",
+                category="write", func=apply_push_transition,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="推拉转场 — 前段推出画面→后段推入画面，方向可控",
+            ),
+            # ── Phase 2 JSON 注入 (draft_injector) ──
+            ToolSpec(
+                name="inject_mask_transition", handler="draft_injector",
+                category="write", func=inject_mask_transition,
+                exec_mode="sync", concurrency_safe=False, timeout=60,
+                retry_strategy="recoverable", max_retries=1,
+                description="遮罩转场 — 直接注入线性蒙版位置关键帧到 draft_content.json",
+            ),
+            ToolSpec(
+                name="inject_color_transition", handler="draft_injector",
+                category="write", func=inject_color_transition,
+                exec_mode="sync", concurrency_safe=False, timeout=60,
+                retry_strategy="recoverable", max_retries=1,
+                description="颜色过渡转场 — 在片段间插入纯色段实现 A→纯色→B 过渡",
+            ),
+            ToolSpec(
+                name="add_karaoke_subtitle", handler="draft_injector",
+                category="write", func=add_karaoke_subtitle,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="逐字高亮字幕 — 每个字/词按时间戳独立着色",
+            ),
+            ToolSpec(
+                name="inject_subtitle_slide", handler="draft_injector",
+                category="write", func=inject_subtitle_slide,
+                exec_mode="sync", concurrency_safe=False, timeout=60,
+                retry_strategy="recoverable", max_retries=1,
+                description="动态字幕条滑入 — 为 TextSegment 注入位置关键帧动画",
+            ),
+            ToolSpec(
+                name="apply_bgm_ducking", handler="draft_injector",
+                category="write", func=apply_bgm_ducking,
+                exec_mode="sync", concurrency_safe=False, timeout=120,
+                retry_strategy="recoverable", max_retries=1,
+                description="BGM 音量闪避 — 人声出现时自动降低背景音乐音量",
+            ),
+            ToolSpec(
+                name="apply_audio_speed", handler="draft_injector",
+                category="write", func=apply_audio_speed,
+                exec_mode="sync", concurrency_safe=False, timeout=60,
+                retry_strategy="recoverable", max_retries=1,
+                description="音频变速 — 为 AudioSegment 注入 speed 字段改变播放速度",
+            ),
+            ToolSpec(
+                name="apply_speed_ramp", handler="draft_injector",
+                category="write", func=apply_speed_ramp,
+                exec_mode="sync", concurrency_safe=False, timeout=60,
+                retry_strategy="recoverable", max_retries=1,
+                description="曲线变速 — 直接注入 KFTypeSpeed 节点实现非均匀变速",
+            ),
         ])
         self.tools = self.registry.get_all_tools()
     
@@ -480,8 +617,10 @@ class JianYingSkillMiddleware(AgentMiddleware):
 def create_jianying_agent(
     skill_root: str,
     media_search_paths: list[str] = None,
-    model_name: str = "glm-5.1",
-    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    # model_name: str = "qwen3.6-27b",
+    # base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model_name: str = "mimo-v2.5-pro",
+    base_url: str = "https://token-plan-cn.xiaomimimo.com/v1",
     api_key: str = None,
     system_prompt: str = None,
     checkpointer=None,
@@ -502,15 +641,32 @@ def create_jianying_agent(
     Returns:
         Agent 实例, middleware 实例
     """
-    # 获取 API 密钥
+    # 确保 .env 已加载（尝试多个路径）
+    try:
+        from dotenv import load_dotenv
+        for env_dir in [Path(__file__).resolve().parent, Path.cwd(), Path.cwd() / ".."]:
+            env_path = env_dir / ".env"
+            if env_path.exists():
+                load_dotenv(env_path, override=True)
+    except Exception:
+        pass
+
+    # 获取 API 密钥（MIMO_API_KEY 优先，兼容旧 DASHSCOPE_API_KEY）
     if api_key is None:
-        api_key = os.getenv("DASHSCOPE_API_KEY")
+        api_key = os.getenv("MIMO_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
+    api_key = (api_key or "").strip()
 
     # 创建模型
+    # streaming=True + stream_usage 确保 Langfuse callback 能捕获 token usage：
+    # MiMo-v2.5-pro 将 usage 放在流式最后一个 chunk (choices=[])，
+    # 非 streaming 模式会跳过该 chunk 导致 Langfuse 收不到 token 数据。
     model = ChatOpenAI(
         model=model_name,
         base_url=base_url,
-        api_key=api_key
+        openai_api_key=api_key,
+        max_retries=0,
+        streaming=True,
+        model_kwargs={"stream_usage": True},
     )
 
     # 创建中间件
@@ -559,7 +715,8 @@ def create_jianying_agent(
    - project.add_cloud_music(query, start_time) 添加云端音乐
    - project.add_tts_intelligent(text, speaker, start_time) TTS语音
    - project.add_narrated_subtitles(text, speaker, start_time) 旁白+字幕
-   - project.add_effect_simple(effect_name, start_time, duration) 特效
+   - project.add_effect_simple(effect_name, start_time, duration) 画面特效（如复古DV、漏光等）
+   - project.add_filter_simple(filter_name, start_time, duration, intensity) 颜色滤镜（如青橙电影、复古电影感等，intensity默认100.0）
    - project.add_transition_simple(transition_name, duration) 转场
    - project.save() 保存（必须调用！）
    - 时间格式："0s", "1s", "3s" 或微秒整数
@@ -647,6 +804,7 @@ def run_jianying_agent(
 
         callback = create_langchain_callback(
             trace_name="jianying_agent",
+            session_id=thread_id,
             tags=["easy-scene", "video-editing"],
         )
         if callback:

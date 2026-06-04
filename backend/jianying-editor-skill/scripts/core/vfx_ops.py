@@ -6,17 +6,32 @@ from utils.formatters import safe_tim, tim
 
 class VfxOpsMixin:
     """
-    JyProject 的特效与转场 Mixin。
+    JyProject 的特效、滤镜与转场 Mixin。
     """
     def add_effect_simple(self, effect_name: str, start_time: Union[str, int] = None, duration: Union[str, int] = "3s", track_name: str = "EffectTrack"):
+        """添加画面特效（如复古DV、漏光等 VideoSceneEffectType）。"""
         if start_time is None:
             start_time = self.get_track_duration(track_name)
         self._ensure_track(draft.TrackType.effect, track_name)
-        
+
         eff_type = self._resolve_enum(draft.VideoSceneEffectType, effect_name)
         if not eff_type: return None
-        
-        seg = draft.EffectSegment(draft.EffectMaterial(eff_type), draft.Timerange(safe_tim(start_time), safe_tim(duration)))
+
+        seg = draft.EffectSegment(eff_type, draft.Timerange(safe_tim(start_time), safe_tim(duration)))
+        self.script.add_segment(seg, track_name)
+        return seg
+
+    def add_filter_simple(self, filter_name: str, start_time: Union[str, int] = None, duration: Union[str, int] = "3s",
+                          intensity: float = 100.0, track_name: str = "FilterTrack"):
+        """添加颜色滤镜（如青橙电影、复古电影感等 FilterType）。"""
+        if start_time is None:
+            start_time = self.get_track_duration(track_name)
+        self._ensure_track(draft.TrackType.filter, track_name)
+
+        filt_type = self._resolve_enum(draft.FilterType, filter_name)
+        if not filt_type: return None
+
+        seg = draft.FilterSegment(filt_type, draft.Timerange(safe_tim(start_time), safe_tim(duration)), intensity / 100.0)
         self.script.add_segment(seg, track_name)
         return seg
 

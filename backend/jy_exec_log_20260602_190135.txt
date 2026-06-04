@@ -1,9 +1,0 @@
-=== STDOUT ===
-
-
-=== STDERR ===
-Traceback (most recent call last):
-  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpnscu4zly.py", line 54, in <module>
-    from pyJianYingDraft import transition
-ImportError: cannot import name 'transition' from 'pyJianYingDraft' (D:\1-6 AI_Agent\2_local_project\EasyScene\backend\jianying-editor-skill\scripts\vendor\pyJianYingDraft\__init__.py). Did you mean: 'TransitionType'?
-

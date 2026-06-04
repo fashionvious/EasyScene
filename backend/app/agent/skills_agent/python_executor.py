@@ -57,6 +57,30 @@ def summarize_output(stdout: str, stderr: str, success: bool) -> str:
         return "\n".join(all_output.split("\n")[-20:])
 
 
+def _artifacts_dir(work_dir: Path) -> Path:
+    """返回统一的临时产物目录，自动创建子目录。"""
+    base = work_dir / ".agent_artifacts"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _cleanup_old_artifacts(work_dir: Path, max_age_days: int = 7) -> None:
+    """清理超过 max_age_days 天的旧脚本和日志。"""
+    artifacts = _artifacts_dir(work_dir)
+    cutoff = time.time() - max_age_days * 86400
+    for subdir in ("scripts", "logs"):
+        d = artifacts / subdir
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            if f.is_file():
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    pass
+
+
 def save_full_output(stdout: str, stderr: str, work_dir: Path) -> str | None:
     """
     将完整输出保存到日志文件。
@@ -67,9 +91,11 @@ def save_full_output(stdout: str, stderr: str, work_dir: Path) -> str | None:
     if not stdout and not stderr:
         return None
 
+    logs_dir = _artifacts_dir(work_dir) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     log_filename = f"jy_exec_log_{timestamp}.txt"
-    log_path = work_dir / log_filename
+    log_path = logs_dir / log_filename
 
     content = f"=== STDOUT ===\n{stdout}\n\n=== STDERR ===\n{stderr}\n"
     log_path.write_text(content, encoding="utf-8")
@@ -166,7 +192,6 @@ def _trim_project_duration(project):
         include_bootstrap: bool = True,
         capture_output: bool = True,
         max_retries: int = 0,
-        keep_temp_on_error: bool = True,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -179,23 +204,25 @@ def _trim_project_duration(project):
             max_retries: 最大重试次数（默认 0 = 不重试）
                 Python 执行器仅对 TimeoutExpired 和 OSError 重试，
                 returncode != 0 不重试（LLM 代码逻辑错误重试无意义）
-            keep_temp_on_error: 失败时是否保留临时文件（默认 True）
             trace_id: Langfuse trace_id，用于关联手动 span（None 时跳过）
 
         Returns:
             执行结果，包含 output, error, raw_output_truncated,
             full_log_path, temp_file 等字段
         """
+        _cleanup_old_artifacts(self.work_dir)
         full_code = ""
         if include_bootstrap:
             full_code = self.generate_bootstrap_code() + "\n\n"
         full_code += code
 
+        scripts_dir = _artifacts_dir(self.work_dir) / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".py",
             delete=False,
-            dir=self.work_dir,
+            dir=str(scripts_dir),
             encoding="utf-8",
         ) as f:
             temp_file = f.name
@@ -271,11 +298,8 @@ def _trim_project_duration(project):
                 if output_truncated or not is_success:
                     full_log_path = save_full_output(output, error, self.work_dir)
 
-                # 临时文件清理：成功 + 小输出 → 删除；否则保留
-                should_keep = keep_temp_on_error and (
-                    not is_success or output_truncated
-                )
-                if not should_keep:
+                # 临时文件清理：成功即删，失败保留用于调试
+                if is_success:
                     try:
                         os.unlink(temp_file)
                     except OSError:

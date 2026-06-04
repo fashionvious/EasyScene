@@ -1,9 +1,0 @@
-=== STDOUT ===
-
-
-=== STDERR ===
-Traceback (most recent call last):
-  File "D:\1-6 AI_Agent\2_local_project\EasyScene\backend\tmpekqtq0uu.py", line 54, in <module>
-    import pyJianYingDraft.transition as tr_mod
-ModuleNotFoundError: No module named 'pyJianYingDraft.transition'
-

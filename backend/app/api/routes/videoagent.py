@@ -93,6 +93,51 @@ def _get_skill_root() -> str:
     )
 
 
+def _inject_langfuse_callback(config: dict, conversation_id: str) -> None:
+    """向 LangGraph config 注入 Langfuse CallbackHandler + trace 属性。
+
+    将 conversation_id 作为 Langfuse session_id：
+    - start_langfuse_trace_context() 在 OTEL context 上设置 session_id/tags/trace_name
+    - create_langchain_callback() 创建 CallbackHandler（在新 API 下只需 public_key）
+
+    OTEL context MUST 在整个 Agent 调用期间保持活跃，因此存入 config["_lf_ctx"]
+    供调用方在 Agent 完成后退出。
+    """
+    try:
+        from app.agent.skills_agent.observability import (
+            start_langfuse_trace_context,
+            create_langchain_callback,
+        )
+    except Exception as e:
+        logger.warning("[Langfuse] import 失败: %s", e)
+        return
+
+    try:
+        lf_ctx = start_langfuse_trace_context(
+            trace_name="jianying_agent",
+            session_id=conversation_id,
+            tags=["easy-scene", "video-editing"],
+        )
+        if lf_ctx is None:
+            logger.warning("[Langfuse] trace context 创建失败 (客户端未配置?)")
+            return
+
+        # 进入 OTEL context（设置 session_id/tags/trace_name 为 baggage）
+        lf_ctx.__enter__()
+        config["_lf_ctx"] = lf_ctx
+
+        handler = create_langchain_callback()
+        if handler:
+            config["callbacks"] = [handler]
+            logger.info("[Langfuse] callback 注入成功, session_id=%s", conversation_id[:8])
+        else:
+            lf_ctx.__exit__(None, None, None)
+            config.pop("_lf_ctx", None)
+            logger.warning("[Langfuse] handler 创建失败")
+    except Exception as e:
+        logger.warning("[Langfuse] 注入失败: %s", e)
+
+
 def _get_or_create_agent():
     """获取或创建 JianYing Agent 单例"""
     global _agent_instance, _middleware_instance
@@ -345,6 +390,10 @@ async def api_chat(
     recursion_limit = _get_recursion_limit(request.message)
     config = {"configurable": {"thread_id": conversation_id}, "recursion_limit": recursion_limit}
 
+    # 注入 Langfuse Callback：将 conversation_id 作为 session_id，后续
+    # test_runner 通过 session_id 搜索来拉取 Token / Latency / Cost。
+    _inject_langfuse_callback(config, conversation_id)
+
     # 确保会话存在于数据库
     _ensure_conversation(conversation_id, current_user.id, request.script_id)
 
@@ -416,6 +465,10 @@ async def api_chat_stream(
     conversation_id = request.conversation_id or str(uuid.uuid4())
     recursion_limit = _get_recursion_limit(request.message)
     config = {"configurable": {"thread_id": conversation_id}, "recursion_limit": recursion_limit}
+
+    # 注入 Langfuse Callback：将 conversation_id 作为 session_id，后续
+    # test_runner 通过 session_id 搜索来拉取 Token / Latency / Cost。
+    _inject_langfuse_callback(config, conversation_id)
 
     # 确保会话存在于数据库
     _ensure_conversation(conversation_id, current_user.id, request.script_id)

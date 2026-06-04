@@ -1,12 +1,16 @@
 """Langfuse 可观测性集成
 
 提供 LLM 调用和工具链的 trace/span 记录能力。
-langfuse-langchain CallbackHandler 自动覆盖 LangChain 管理的调用，
-手动 span API 覆盖 FFmpeg/TTS 等外部 subprocess 调用。
+- langfuse-langchain v2.60+ CallbackHandler 自动捕获 LangChain LLM 调用。
+- propagate_attributes 在 OTEL context 上设置 session_id / tags / trace_name。
+- 手动 span API 覆盖 FFmpeg/TTS 等外部 subprocess 调用。
 """
+import contextlib
 import os
 import logging
-from langfuse import Langfuse
+from typing import Any
+
+from langfuse import Langfuse, propagate_attributes
 from langfuse.langchain import CallbackHandler
 
 logger = logging.getLogger(__name__)
@@ -34,19 +38,46 @@ def get_langfuse_client() -> Langfuse | None:
         _langfuse_client = Langfuse(
             secret_key=secret_key,
             public_key=public_key,
-            host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+            host=os.getenv("LANGFUSE_BASE_URL", os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")),
         )
     return _langfuse_client
 
 
-def create_langchain_callback(
+def start_langfuse_trace_context(
     trace_name: str = "jianying_agent",
-    user_id: str | None = None,
     session_id: str | None = None,
     tags: list[str] | None = None,
-) -> CallbackHandler | None:
+    user_id: str | None = None,
+) -> contextlib.AbstractContextManager | None:
+    """
+    开启 Langfuse trace 属性上下文。
+
+    在 OTEL context 上设置 session_id / tags / trace_name 为 baggage，
+    使 langfuse-langchain CallbackHandler 创建的 trace 自动继承这些属性。
+
+    返回 context manager，调用方 MUST 在 Agent 调用期间保持其活跃。
+
+    Returns:
+        context manager 或 None（Langfuse 未配置时）
+    """
+    client = get_langfuse_client()
+    if client is None:
+        return None
+
+    return propagate_attributes(
+        trace_name=trace_name,
+        session_id=session_id,
+        tags=tags or [],
+        user_id=user_id,
+    )
+
+
+def create_langchain_callback() -> CallbackHandler | None:
     """
     创建 LangChain 自动埋点回调处理器。
+
+    直接使用 Langfuse 默认客户端（从环境变量读取配置）。
+    与 start_langfuse_trace_context() 配合使用。
 
     Returns:
         CallbackHandler 实例，若 Langfuse 未配置则返回 None。
@@ -54,13 +85,7 @@ def create_langchain_callback(
     client = get_langfuse_client()
     if client is None:
         return None
-    return CallbackHandler(
-        client=client,
-        trace_name=trace_name,
-        user_id=user_id,
-        session_id=session_id,
-        tags=tags or [],
-    )
+    return CallbackHandler()
 
 
 def create_manual_span(trace_id: str, name: str, input_data: dict) -> str | None:
@@ -73,9 +98,10 @@ def create_manual_span(trace_id: str, name: str, input_data: dict) -> str | None
     client = get_langfuse_client()
     if client is None:
         return None
-    span = client.span(
+    span = client.start_observation(
         trace_id=trace_id,
         name=name,
+        as_type="span",
         input=input_data,
     )
     return span.id
@@ -90,13 +116,13 @@ def end_manual_span(
     """
     结束手动 span，提供输出更新 + 异常安全的 end()。
 
-    Langfuse v3 中 span() 返回 Span 对象，直接调用 .end() 即可。
+    Langfuse v4 中通过 start_observation(id=span_id) 获取 span 引用。
     """
     client = get_langfuse_client()
     if client is None:
         return
     try:
-        span = client.span(id=span_id)
+        span = client.start_observation(id=span_id)
         if output_data:
             span.update(output=output_data)
         if level:

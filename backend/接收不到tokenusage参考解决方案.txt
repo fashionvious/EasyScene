@@ -1,0 +1,128 @@
+ 好的，我已经查阅了小米MiMo平台的官方API文档，现在有了完整的答案。关键发现如下：
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    核心发现：MiMo-V2.5-Pro 流式响应确实返回 usage，但有特殊结构
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    MiMo-V2.5-Pro 的流式响应中，usage 数据在最后一个 chunk 返回，
+    但这个 chunk 的 choices 是空数组 []，且 usage 在中间 chunk 全是 null。
+
+    具体结构：
+      正常 chunk: choices[0].delta.content = "...", usage = null
+      最后一个chunk: choices = [], usage = {completion_tokens: 123, prompt_tokens: 55, ...}
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    问题根因分析
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Langfuse 无法捕获 token 的原因大概率是以下几种：
+
+    1. 你用的框架（LangChain/LlamaIndex）在流式模式下只处理有 choices 的 chunk，
+       跳过了 choices=[] 的 usage chunk
+
+    2. Langfuse 的 callback 可能没正确处理 MiMo 的 reasoning_content 字段
+       （这是非标准 OpenAI 字段，用于思考链）
+
+    3. 使用 OpenAI SDK 时，流式迭代默认不会把最后一个 usage chunk 的
+       数据传递给 Langfuse callback
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    解决方案（按你使用的框架选择）
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    你用的是什么框架调用 MiMo？这决定了具体代码怎么改。
+
+    如果你用的是 OpenAI SDK 直接调用：
+
+    python
+    from openai import OpenAI
+    from langfuse import Langfuse
+
+    client = OpenAI(
+        api_key="your_key",
+        base_url="https://api.xiaomimimo.com/v1"
+    )
+    langfuse = Langfuse()
+
+    trace = langfuse.trace(name="mimo-call")
+
+    completion = client.chat.completions.create(
+        model="mimo-v2.5-pro",
+        messages=[...],
+        stream=True
+    )
+
+    full_content = ""
+    usage_data = None
+
+    for chunk in completion:
+        # 正常拼接内容
+        if chunk.choices and chunk.choices[0].delta.content:
+            full_content += chunk.choices[0].delta.content
+
+        # 关键：捕获最后一个 chunk 的 usage
+        if chunk.usage:
+            usage_data = {
+                "promptTokens": chunk.usage.prompt_tokens,
+                "completionTokens": chunk.usage.completion_tokens,
+                "totalTokens": chunk.usage.total_tokens
+            }
+
+    手动记录 generation 到 Langfuse
+    trace.generation(
+        name="mimo-v2.5-pro",
+        model="mimo-v2.5-pro",
+        input=messages,
+        output=full_content,
+        usage=usage_data  # 这里传入 usage
+    )
+
+    langfuse.flush()
+
+
+    如果你用的是 LangChain：
+
+    python
+    from langchain_openai import ChatOpenAI
+    from langfuse.callback import CallbackHandler
+
+    Langfuse callback
+    langfuse_handler = CallbackHandler(
+        public_key="...",
+        secret_key="...",
+        host="..."
+    )
+
+    llm = ChatOpenAI(
+        model="mimo-v2.5-pro",
+        openai_api_key="your_key",
+        openai_api_base="https://api.xiaomimimo.com/v1",
+        streaming=True,
+        # 关键：强制在流式中返回 usage
+        model_kwargs={"stream_usage": True}
+    )
+
+    response = llm.invoke(
+        input=[...],
+        config={"callbacks": [langfuse_handler]}
+    )
+
+    LangChain 会把 usage 放在 response.usage_metadata 中
+    print(response.usage_metadata)
+
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    验证步骤
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    1. 先不接 Langfuse，直接打印最后一个 chunk 确认 usage 存在：
+       for chunk in completion:
+           if chunk.usage:
+               print(chunk.usage)
+
+    2. 确认 Langfuse dashboard 中 generation 的 usage 字段有值
+
+    3. 注意 MiMo 的 usage 包含 reasoning_tokens（思考链 token），
+       Langfuse 可能不认识这个子字段，但 prompt_tokens/completion_tokens 是标准字段，应该能正常解析
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
