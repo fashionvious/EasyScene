@@ -25,6 +25,9 @@ AI 驱动的全栈智能视频生成平台 —— 从剧本到成片，一句话
 - **批量化生产效率低**：基于 Celery 异步任务队列，支持并行批量生成
 
 ---
+## 剪映编辑 Agent 的端到端自动化测试结果与评估
+
+[剪辑 Agent 自动化测试报告](./%E5%89%AA%E8%BE%91%20Agent%20%E8%87%AA%E5%8A%A8%E5%8C%96%E6%B5%8B%E8%AF%95%E6%8A%A5%E5%91%8A.md) 
 
 ## 核心特性
 
@@ -144,15 +147,9 @@ AI 驱动的全栈智能视频生成平台 —— 从剧本到成片，一句话
 
 ## 本地开发指南
 
-> **说明**：此部分内容将由开发者手动补充说明本地环境配置、运行命令及部署流程。以下为关键参考点：
 >
-> - 后端：Python 3.10+，使用 `uv sync` 安装依赖，`fastapi run --reload` 启动开发服务器
-> - 前端：Bun / Node.js，使用 `bun install && bun run dev` 启动 Vite 开发服务器
-> - 基础设施：`docker compose up -d` 启动 PostgreSQL、Redis、Adminer 等服务
-> - 环境变量：参考 `.env` 文件配置，包含数据库连接、AI API Key、Sentry DSN 等
->
-1.将backend/app/env_example复制为backend/app/.env ，并修改其中内容。
-2.按序执行以下命令：
+> - 将backend/app/env_example复制为backend/app/.env ，并修改其中内容。
+> - 按序执行以下命令：
 ```python
 #启动redis和postgresql
 docker compose up -d db redis
@@ -221,11 +218,7 @@ HTTP 请求日志通过 `uvicorn.error` logger 输出，包含脱敏后的 Heade
 - **WebSocket 编辑进度**：编辑任务通过 WebSocket 实时推送步骤级进度更新（`/edit` 路由）
 - **数据库操作日志**：`operation_log` 表记录所有关键操作（创建 / 修改 / AI 生成 / 删除 / 恢复 / 权限变更 / 版本切换），可按 target_type + target_id 检索任意实体的完整操作历史
 
----
 
-## 相关文档
-
-- [剪辑 Agent 自动化测试报告](./%E5%89%AA%E8%BE%91%20Agent%20%E8%87%AA%E5%8A%A8%E5%8C%96%E6%B5%8B%E8%AF%95%E6%8A%A5%E5%91%8A.md) — 剪映编辑 Agent 的端到端自动化测试结果与评估
 
 ---
 
