@@ -151,7 +151,41 @@ AI 驱动的全栈智能视频生成平台 —— 从剧本到成片，一句话
 > - 基础设施：`docker compose up -d` 启动 PostgreSQL、Redis、Adminer 等服务
 > - 环境变量：参考 `.env` 文件配置，包含数据库连接、AI API Key、Sentry DSN 等
 >
-> **详细步骤请由开发者手动补充。**
+1.将backend/app/env_example复制为backend/app/.env ，并修改其中内容。
+2.按序执行以下命令：
+```python
+#启动redis和postgresql
+docker compose up -d db redis
+
+#安装虚拟环境
+uv sync
+
+#数据迁移
+cd backend
+alembic upgrade head
+uv add browser-cookie3
+
+#创建超级用户
+python -m app.initial_data 
+
+# 启动后端
+.venv\Scripts\activate
+cd backend
+uv run python -m fastapi dev app/main.py --reload
+
+# 启动前端
+cd frontend
+npm run dev
+
+#启动celery worker 
+.venv\Scripts\activate 
+cd backend 
+python -m celery -A app.agent.generateVideo.tasks.celery_app worker -l info -P solo
+#启动pytest 
+.venv\Scripts\activate 
+cd backend 
+pytest
+```
 
 ---
 

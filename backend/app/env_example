@@ -29,8 +29,30 @@ POSTGRES_DB=app
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=changethis
 
+# Redis数据库配置参数
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+SESSION_TIMEOUT = 300
+TTL = 3600
+REDIS_PASSWORD = "123456"  # <--- 新增：填写你的 Redis 密码
+CELERY_BROKER_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+TASK_TTL = 3600
 
-#以下为选填
+# 视频生成工作流llm默认模型，如果节点没有指定模型，默认使用这个模型
+LLM_MODEL_ID=""
+LLM_API_KEY=""
+LLM_BASE_URL=""
+# 超时时间（可选，默认60秒）
+LLM_TIMEOUT=120
+
+#多模态模型，推荐使用火山api
+ARK_API_KEY=""
+# 视频剪辑agent llm默认模型，如果agent没有指定模型，默认使用这个模型
+MIMO_API_KEY=""
+
+#以下内容为选填
+
 # Emails
 SMTP_HOST=
 SMTP_USER=
@@ -42,11 +64,17 @@ SMTP_PORT=587
 
 SENTRY_DSN=
 
-LANGFUSE_SECRET_KEY="sk-lf-4ea2ad75-8045-4125-9a73-942056a40666"
-LANGFUSE_PUBLIC_KEY="pk-lf-f27d8788-6ab9-4473-95c8-2110269ed295"
-LANGFUSE_BASE_URL="https://jp.cloud.langfuse.com"
+#langfuse追踪配置
+LANGFUSE_SECRET_KEY=""
+LANGFUSE_PUBLIC_KEY=""
+LANGFUSE_BASE_URL=""
 
-
+#bilibili配置
 BILI_COOKIE="your_cookie_here"
 BILI_UA=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
 BILI_DEBUG=0
+
+#热点视频解析配置
+DEEPSEEK_API_KEY=""your_deepseek_key""
+GEMINI_API_KEYS=key1,key2,key3
+VEO_API_KEY="your_veo_key"
