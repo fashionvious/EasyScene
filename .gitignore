@@ -4,3 +4,10 @@ node_modules/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+# 忽略 docs 文件夹
+docs/
+
+# 忽略所有的 .env 文件
+.env
+.env.*
+*.env

@@ -1,5 +1,0 @@
-1. **`timeline_ops_req.md`**: 包含 J-Cut, L-Cut, reorder_segments (对应 timeline_ops.py)。
-2. **`layout_and_subtitle_ops_req.md`**: 合并分屏效果、多语言字幕 (对应 layout_ops.py 和 subtitle_ops.py)。
-3. **`transition_ops_req.md`**: 包含缩放转场、推拉转场 (对应 transition_ops.py)。
-4. **`draft_injector_req.md`**: 包含所有 Phase 2 的底层注入工具 (对应 draft_injector.py，强调需调用 JyProject.save() 的约束)。
-5. **`external_tools_req.md`**: 合并 Phase 3 的所有原子工具与 SubprocessExecutor 设计 (对应 external_tools.py 和 subprocess_executor.py)。
