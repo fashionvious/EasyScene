@@ -11,7 +11,7 @@
     "test:ui": "bun run --filter frontend test:ui"
   },
   "dependencies": {
-    "@radix-ui/react-scroll-area": "^1.2.10",
+    "@radix-ui/react-scroll-area": "^1.2.11",
     "qrcode": "^1.5.4"
   }
 }
